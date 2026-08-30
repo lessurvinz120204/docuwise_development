@@ -664,7 +664,7 @@ class AdminController extends Controller
 
     public function users(Request $request)
     {
-        $stagesByCategory = WorkflowStage::where('is_archived', false)->orderBy('sequence_order')->get()->groupBy('document_category');
+        $stagesByCategory = WorkflowStage::where('is_archived', false)->with('departments')->orderBy('sequence_order')->get()->groupBy('document_category');
 
         return view('admin.users', array_merge(
             compact('stagesByCategory'),
@@ -727,38 +727,48 @@ class AdminController extends Controller
                 'required_if:role,approver',
                 'in:' . implode(',', ValidationService::knownCategories()),
             ],
+            'department' => [
+                'nullable',
+                'required_if:role,approver',
+                'in:' . implode(',', User::knownDepartments()),
+            ],
+            'level' => [
+                'nullable',
+                'required_if:role,approver',
+                'in:' . implode(',', User::knownLevels()),
+            ],
             'stage_ids' => ['nullable', 'array'],
             'stage_ids.*' => ['integer', 'exists:workflow_stages,stage_id'],
             'password' => ['required', 'string', 'min:8'],
         ]);
+
+        $isApprover = $validated['role'] === 'approver';
 
         $user = User::create([
             'username' => $validated['username'],
             'full_name' => $validated['full_name'],
             'email' => $validated['email'],
             'role' => $validated['role'],
-            // Only Approvers are ever scoped to a category. Admin and
-            // Originator accounts always get null here regardless of what
-            // was submitted — Originators upload any document type and are
-            // classified automatically, so they are never restricted.
-            'assigned_category' => $validated['role'] === 'approver' ? $validated['assigned_category'] : null,
+            // Only Approvers are ever scoped to a category/department/level.
+            // Admin and Originator accounts always get null here regardless
+            // of what was submitted — Originators upload any document type
+            // and are classified automatically, so they are never restricted.
+            'assigned_category' => $isApprover ? $validated['assigned_category'] : null,
+            'department' => $isApprover ? $validated['department'] : null,
+            'level' => $isApprover ? $validated['level'] : null,
             'password_hash' => Hash::make($validated['password']),
             'created_by' => $request->user()->user_id,
             'is_active' => true,
         ]);
 
         if ($user->role === 'approver' && !empty($validated['stage_ids'])) {
-            // Server-side integrity check: only sync stage IDs that actually
-            // belong to this approver's chosen category.
-            $validStageIds = WorkflowStage::where('document_category', $user->assigned_category)
-                ->whereIn('stage_id', $validated['stage_ids'])
-                ->pluck('stage_id');
+            $validStageIds = $this->stageIdsOwnedByDepartment($user->assigned_category, $user->department, $validated['stage_ids']);
             $user->workflowStages()->sync($validStageIds);
         }
 
         AuditLog::record($request->user()->user_id, null, 'user_create',
             "Created account #{$user->user_id} ({$user->username}) with role '{$user->role}'" .
-            ($user->assigned_category ? ", assigned category '{$user->assigned_category}'." : '.'));
+            ($user->assigned_category ? ", assigned category '{$user->assigned_category}', department '{$user->department}' ({$user->level})." : '.'));
 
         // Login is blocked until this is clicked (see AuthController::
         // login()) — sent immediately so the account is usable as soon as
@@ -787,7 +797,7 @@ class AdminController extends Controller
     {
         abort_unless($user->role === 'approver', 422, 'Only approver accounts have stage assignments.');
 
-        $stagesByCategory = WorkflowStage::where('is_archived', false)->orderBy('sequence_order')->get()->groupBy('document_category');
+        $stagesByCategory = WorkflowStage::where('is_archived', false)->with('departments')->orderBy('sequence_order')->get()->groupBy('document_category');
         $assignedStageIds = $user->workflowStages()->pluck('workflow_stages.stage_id')->all();
 
         // Informational only — reassigning category/stages never touches
@@ -801,18 +811,21 @@ class AdminController extends Controller
     }
 
     /**
-     * Updates an approver's category and/or which specific stages within it
-     * they handle (Feature: Dynamic Workflow Assignment). Changing category
-     * always resets stage picks to "every stage in the new category"
-     * (unrestricted) rather than silently carrying over stage_ids that
-     * belonged to the old category and would be meaningless in the new one.
-     * Leaving every checkbox unchecked has the same "unrestricted" effect.
+     * Updates an approver's category, department, level, and/or which
+     * specific stages within them they handle (Feature: Dynamic Workflow
+     * Assignment). Changing category OR department always resets stage
+     * picks to "every stage the new category/department combination owns"
+     * (unrestricted within that) rather than silently carrying over
+     * stage_ids that belonged to the old category/department and might not
+     * even be legal for the new one. Leaving every checkbox unchecked has
+     * the same "unrestricted" effect.
      *
      * Already-created DocumentAssignment rows are untouched by this — see
      * WorkflowService::eligibleApproversForStage(), which only consults
-     * assigned_category/workflowStages() when routing a NEW document. A
-     * pending assignment this approver already holds stays in their queue
-     * and can still be decided normally regardless of this change.
+     * assigned_category/department/workflowStages() when routing a NEW
+     * document. A pending assignment this approver already holds stays in
+     * their queue and can still be decided normally regardless of this
+     * change.
      */
     public function updateApproverStages(Request $request, User $user)
     {
@@ -820,36 +833,65 @@ class AdminController extends Controller
 
         $validated = $request->validate([
             'assigned_category' => ['required', 'in:' . implode(',', ValidationService::knownCategories())],
+            'department' => ['required', 'in:' . implode(',', User::knownDepartments())],
+            'level' => ['required', 'in:' . implode(',', User::knownLevels())],
             'stage_ids' => ['nullable', 'array'],
             'stage_ids.*' => ['integer', 'exists:workflow_stages,stage_id'],
         ]);
 
         $categoryChanged = $validated['assigned_category'] !== $user->assigned_category;
+        $departmentChanged = $validated['department'] !== $user->department;
+        $resetPicks = $categoryChanged || $departmentChanged;
         $oldCategory = $user->assigned_category;
+        $oldDepartment = $user->department;
 
-        // Re-validated server-side against whichever category was actually
-        // submitted — the category dropdown and stage checkboxes are only
+        // Re-validated server-side against whichever category/department was
+        // actually submitted — the dropdowns and stage checkboxes are only
         // kept in sync client-side, so a tampered request could otherwise
-        // submit stage IDs from a different category entirely.
-        $validStageIds = WorkflowStage::where('document_category', $validated['assigned_category'])
-            ->whereIn('stage_id', $validated['stage_ids'] ?? [])
-            ->pluck('stage_id');
+        // submit stage IDs from a different category or a department that
+        // doesn't own them at all.
+        $validStageIds = $this->stageIdsOwnedByDepartment($validated['assigned_category'], $validated['department'], $validated['stage_ids'] ?? []);
 
         $user->assigned_category = $validated['assigned_category'];
+        $user->department = $validated['department'];
+        $user->level = $validated['level'];
         $user->save();
 
-        // A category switch always clears stage picks (see docblock above);
-        // otherwise sync whatever was actually submitted for this category.
-        $user->workflowStages()->sync($categoryChanged ? [] : $validStageIds);
+        $user->workflowStages()->sync($resetPicks ? [] : $validStageIds);
 
-        $description = $categoryChanged
-            ? "Reassigned {$user->full_name} (#{$user->user_id}) from '{$oldCategory}' to '{$validated['assigned_category']}'. Stage assignments reset to unrestricted (all stages in the new category)."
-            : "Updated stage assignments for {$user->full_name} (#{$user->user_id}): " .
+        $description = $resetPicks
+            ? "Reassigned {$user->full_name} (#{$user->user_id}) from '{$oldCategory}'/'{$oldDepartment}' to " .
+                "'{$validated['assigned_category']}'/'{$validated['department']}' ({$validated['level']}). " .
+                'Stage assignments reset to unrestricted (all stages the new department owns in this category).'
+            : "Updated stage assignments for {$user->full_name} (#{$user->user_id}) [{$validated['department']}, {$validated['level']}]: " .
                 ($validStageIds->isEmpty() ? 'all stages in category (no restriction).' : implode(', ', $validStageIds->all()));
 
         AuditLog::record($request->user()->user_id, null, 'assign_stages', $description);
 
         return redirect()->route('admin.users')->with('status', "Stage assignments updated for {$user->full_name}.");
+    }
+
+    /**
+     * Server-side integrity gate shared by storeUser() and
+     * updateApproverStages(): only stage IDs that both (a) belong to
+     * $category and (b) are either unrestricted by department or explicitly
+     * owned by $department survive. Mirrors WorkflowService::
+     * eligibleApproversForStage()'s own department check exactly, so an
+     * approver can never end up holding a stage the admin form wouldn't
+     * have let them pick in the first place.
+     *
+     * @param  array<int>  $requestedStageIds
+     */
+    private function stageIdsOwnedByDepartment(string $category, ?string $department, array $requestedStageIds): \Illuminate\Support\Collection
+    {
+        return WorkflowStage::where('document_category', $category)
+            ->whereIn('stage_id', $requestedStageIds)
+            ->get()
+            ->filter(function (WorkflowStage $stage) use ($department) {
+                $owners = $stage->departmentNames();
+                return $owners === [] || in_array($department, $owners, true);
+            })
+            ->pluck('stage_id');
     }
 
     /**

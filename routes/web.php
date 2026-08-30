@@ -48,14 +48,14 @@ Route::middleware('guest')->group(function () {
     // IP-only cap is a second, coarser layer on top of that — it catches
     // an attacker sweeping through many different emails from one IP,
     // which the per-email limiter alone wouldn't trip.
-    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1')->name('login.attempt');
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth')->name('login.attempt');
 
     // Self-service password reset — reachable by a guest by definition
     // (that's the whole point: they can't log in to reach anything else).
     Route::get('/forgot-password', [AuthController::class, 'showForgotPassword'])->name('password.request');
-    Route::post('/forgot-password', [AuthController::class, 'sendResetLink'])->middleware('throttle:5,1')->name('password.email');
+    Route::post('/forgot-password', [AuthController::class, 'sendResetLink'])->middleware('throttle:auth-sensitive')->name('password.email');
     Route::get('/reset-password/{token}', [AuthController::class, 'showResetForm'])->name('password.reset');
-    Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1')->name('password.update');
+    Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:auth-sensitive')->name('password.update');
 });
 
 // Deliberately outside both 'guest' and 'auth' — the person clicking this
@@ -65,7 +65,7 @@ Route::middleware('guest')->group(function () {
 // itself (id + sha1 of the email, expiring) is the credential, not a
 // session or role check.
 Route::get('/email/verify/{id}/{hash}', [AuthController::class, 'verifyEmail'])
-    ->middleware(['signed', 'throttle:10,1'])
+    ->middleware(['signed', 'throttle:auth'])
     ->name('verification.verify');
 
 Route::middleware('auth')->group(function () {
@@ -76,9 +76,9 @@ Route::middleware('auth')->group(function () {
     // Same live-poll pair pattern as the role dashboards — the bell
     // appears on every page (see components/notification-bell.blade.php),
     // so these live outside any single role's route group.
-    Route::get('/notifications/poll', [NotificationController::class, 'poll'])->middleware('throttle:30,1')->name('notifications.poll');
-    Route::get('/notifications/refresh', [NotificationController::class, 'refresh'])->middleware('throttle:30,1')->name('notifications.refresh');
-    Route::get('/notifications/list-refresh', [NotificationController::class, 'listRefresh'])->middleware('throttle:30,1')->name('notifications.listRefresh');
+    Route::get('/notifications/poll', [NotificationController::class, 'poll'])->middleware('throttle:polling')->name('notifications.poll');
+    Route::get('/notifications/refresh', [NotificationController::class, 'refresh'])->middleware('throttle:polling')->name('notifications.refresh');
+    Route::get('/notifications/list-refresh', [NotificationController::class, 'listRefresh'])->middleware('throttle:polling')->name('notifications.listRefresh');
     Route::post('/notifications/{notification}/read', [NotificationController::class, 'markRead'])->name('notifications.read');
     Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead'])->name('notifications.readAll');
 
@@ -88,20 +88,20 @@ Route::middleware('auth')->group(function () {
         // Live-poll pair, same headroom reasoning as the approver queue's
         // equivalent routes: poll is cheap and hit every 5-10s, refresh is
         // heavier and only fetched when poll detects a change.
-        Route::get('/documents/poll', [DocumentController::class, 'poll'])->middleware('throttle:30,1')->name('documents.poll');
-        Route::get('/documents/refresh', [DocumentController::class, 'refresh'])->middleware('throttle:30,1')->name('documents.refresh');
+        Route::get('/documents/poll', [DocumentController::class, 'poll'])->middleware('throttle:polling')->name('documents.poll');
+        Route::get('/documents/refresh', [DocumentController::class, 'refresh'])->middleware('throttle:polling')->name('documents.refresh');
         // Upload endpoints are rate-limited (keyed by authenticated user
         // ID, per Laravel's default ThrottleRequests behavior) — each
         // request can trigger text extraction, OCR, and SVM classification,
         // so this caps both accidental runaway scripts and deliberate abuse.
-        Route::post('/documents', [DocumentController::class, 'store'])->middleware('throttle:20,1')->name('documents.store');
+        Route::post('/documents', [DocumentController::class, 'store'])->middleware('throttle:mutations')->name('documents.store');
         Route::get('/documents/{document}', [DocumentController::class, 'show'])->name('documents.show');
         // Per-document live-poll pair for the tracking page — reacts to a
         // single stage being decided, not just the document's overall
         // status finalizing (§ see DocumentAssignment::booted()).
-        Route::get('/documents/{document}/poll', [DocumentController::class, 'trackingPoll'])->middleware('throttle:30,1')->name('documents.trackingPoll');
-        Route::get('/documents/{document}/refresh', [DocumentController::class, 'trackingRefresh'])->middleware('throttle:30,1')->name('documents.trackingRefresh');
-        Route::post('/documents/{document}/resubmit', [DocumentController::class, 'resubmit'])->middleware('throttle:20,1')->name('documents.resubmit');
+        Route::get('/documents/{document}/poll', [DocumentController::class, 'trackingPoll'])->middleware('throttle:polling')->name('documents.trackingPoll');
+        Route::get('/documents/{document}/refresh', [DocumentController::class, 'trackingRefresh'])->middleware('throttle:polling')->name('documents.trackingRefresh');
+        Route::post('/documents/{document}/resubmit', [DocumentController::class, 'resubmit'])->middleware('throttle:mutations')->name('documents.resubmit');
         Route::get('/archive', [ArchiveController::class, 'index'])->name('archive');
     });
 
@@ -109,13 +109,13 @@ Route::middleware('auth')->group(function () {
     Route::middleware('role:approver')->prefix('approver')->name('approver.')->group(function () {
         Route::get('/dashboard', [ApprovalController::class, 'dashboard'])->name('dashboard');
         // 5-10s client polling (see dashboard.blade.php) means up to ~12
-        // requests/min from one tab; throttle:30,1 gives headroom for a
+        // requests/min from one tab; throttle:polling gives headroom for a
         // couple of open tabs without letting a runaway/malicious loop
         // hammer the DB unbounded.
-        Route::get('/assignments/poll', [ApprovalController::class, 'poll'])->middleware('throttle:30,1')->name('assignments.poll');
+        Route::get('/assignments/poll', [ApprovalController::class, 'poll'])->middleware('throttle:polling')->name('assignments.poll');
         // Only fetched when poll() actually detects a change, not every
         // 5-10s cycle — same headroom reasoning as poll() above.
-        Route::get('/assignments/refresh', [ApprovalController::class, 'refresh'])->middleware('throttle:30,1')->name('assignments.refresh');
+        Route::get('/assignments/refresh', [ApprovalController::class, 'refresh'])->middleware('throttle:polling')->name('assignments.refresh');
         Route::post('/assignments/{assignment}/decide', [ApprovalController::class, 'decide'])->name('assignments.decide');
         Route::post('/assignments/decide-batch', [ApprovalController::class, 'decideBatch'])->name('assignments.decideBatch');
         Route::post('/availability/toggle', [ApprovalController::class, 'toggleAvailability'])->name('availability.toggle');
@@ -126,18 +126,18 @@ Route::middleware('auth')->group(function () {
         // this includes their own rejections too (see ApprovalController::
         // historyResults()'s docblock).
         Route::get('/history', [ApprovalController::class, 'history'])->name('history');
-        Route::get('/history/refresh', [ApprovalController::class, 'historyRefresh'])->middleware('throttle:30,1')->name('history.refresh');
-        Route::get('/history/poll', [ApprovalController::class, 'historyPoll'])->middleware('throttle:30,1')->name('history.poll');
+        Route::get('/history/refresh', [ApprovalController::class, 'historyRefresh'])->middleware('throttle:polling')->name('history.refresh');
+        Route::get('/history/poll', [ApprovalController::class, 'historyPoll'])->middleware('throttle:polling')->name('history.poll');
     });
 
     // --- Admin ---
     Route::middleware('role:admin')->prefix('admin')->name('admin.')->group(function () {
         Route::get('/dashboard', [AdminController::class, 'dashboard'])->name('dashboard');
         // Same live-poll pair pattern as the approver/originator dashboards.
-        Route::get('/dashboard/poll', [AdminController::class, 'overviewPoll'])->middleware('throttle:30,1')->name('dashboard.poll');
-        Route::get('/dashboard/refresh', [AdminController::class, 'overviewRefresh'])->middleware('throttle:30,1')->name('dashboard.refresh');
-        Route::get('/dashboard/drilldown/{type}', [AdminController::class, 'dashboardDrilldown'])->middleware('throttle:30,1')->name('dashboard.drilldown');
-        Route::get('/dashboard/analytics-panel', [AdminController::class, 'analyticsPanelRefresh'])->middleware('throttle:30,1')->name('dashboard.analyticsPanel');
+        Route::get('/dashboard/poll', [AdminController::class, 'overviewPoll'])->middleware('throttle:polling')->name('dashboard.poll');
+        Route::get('/dashboard/refresh', [AdminController::class, 'overviewRefresh'])->middleware('throttle:polling')->name('dashboard.refresh');
+        Route::get('/dashboard/drilldown/{type}', [AdminController::class, 'dashboardDrilldown'])->middleware('throttle:polling')->name('dashboard.drilldown');
+        Route::get('/dashboard/analytics-panel', [AdminController::class, 'analyticsPanelRefresh'])->middleware('throttle:polling')->name('dashboard.analyticsPanel');
 
         Route::get('/users', [AdminController::class, 'users'])->name('users');
         Route::get('/users/refresh', [AdminController::class, 'usersRefresh'])->name('users.refresh');
@@ -150,7 +150,7 @@ Route::middleware('auth')->group(function () {
 
         Route::get('/ml-training', [AdminController::class, 'mlTraining'])->name('ml.training');
         Route::post('/ml-training', [AdminController::class, 'trainModel'])->name('ml.train');
-        Route::post('/ml-training/stage/{category}', [AdminController::class, 'stageTrainingSamples'])->middleware('throttle:20,1')->name('ml.training.stage');
+        Route::post('/ml-training/stage/{category}', [AdminController::class, 'stageTrainingSamples'])->middleware('throttle:mutations')->name('ml.training.stage');
         Route::delete('/ml-training/stage/{category}', [AdminController::class, 'clearTrainingStaging'])->name('ml.training.stage.clear');
         Route::delete('/ml-training/samples/{sample}', [AdminController::class, 'destroyTrainingSample'])->name('ml.training.sample.destroy');
         Route::post('/ml-training/review/{document}', [AdminController::class, 'reviewFlaggedDocument'])->name('ml.review');
@@ -161,8 +161,8 @@ Route::middleware('auth')->group(function () {
         Route::post('/ml-training/readability-review/{document}', [AdminController::class, 'reviewReadability'])->name('ml.review.readability');
 
         Route::get('/sla-queue', [AdminController::class, 'slaQueue'])->name('sla.queue');
-        Route::get('/sla-queue/refresh', [AdminController::class, 'slaQueueRefresh'])->middleware('throttle:30,1')->name('sla.queue.refresh');
-        Route::get('/sla-queue/poll', [AdminController::class, 'slaQueuePoll'])->middleware('throttle:30,1')->name('sla.queue.poll');
+        Route::get('/sla-queue/refresh', [AdminController::class, 'slaQueueRefresh'])->middleware('throttle:polling')->name('sla.queue.refresh');
+        Route::get('/sla-queue/poll', [AdminController::class, 'slaQueuePoll'])->middleware('throttle:polling')->name('sla.queue.poll');
         Route::post('/sla-queue/{assignment}/override', [AdminController::class, 'override'])->name('sla.override');
         Route::post('/sla-queue/override-batch', [AdminController::class, 'overrideBatch'])->name('sla.overrideBatch');
         Route::post('/sla-queue/document/{document}/review', [AdminController::class, 'reviewAutoApproval'])->name('sla.review');
@@ -171,15 +171,15 @@ Route::middleware('auth')->group(function () {
         // eligible approver — kept separate from the SLA Override Queue
         // above on purpose (see AdminController::markNeedsApprover doc).
         Route::get('/unassigned-documents', [AdminController::class, 'unassignedDocuments'])->name('unassigned.index');
-        Route::get('/unassigned-documents/refresh', [AdminController::class, 'unassignedDocumentsRefresh'])->middleware('throttle:30,1')->name('unassigned.refresh');
-        Route::get('/unassigned-documents/poll', [AdminController::class, 'unassignedDocumentsPoll'])->middleware('throttle:30,1')->name('unassigned.poll');
+        Route::get('/unassigned-documents/refresh', [AdminController::class, 'unassignedDocumentsRefresh'])->middleware('throttle:polling')->name('unassigned.refresh');
+        Route::get('/unassigned-documents/poll', [AdminController::class, 'unassignedDocumentsPoll'])->middleware('throttle:polling')->name('unassigned.poll');
         Route::post('/unassigned-documents/{assignment}/decide', [AdminController::class, 'decideUnassigned'])->name('unassigned.decide');
 
         Route::post('/system-settings/business-hours-toggle', [AdminController::class, 'updateBusinessHoursEnforcement'])->name('systemSettings.businessHoursToggle');
 
         Route::get('/workflow-config', [AdminController::class, 'workflowConfig'])->name('workflow.config');
-        Route::get('/workflow-config/refresh', [AdminController::class, 'workflowConfigRefresh'])->middleware('throttle:30,1')->name('workflow.config.refresh');
-        Route::get('/workflow-config/poll', [AdminController::class, 'workflowConfigPoll'])->middleware('throttle:30,1')->name('workflow.config.poll');
+        Route::get('/workflow-config/refresh', [AdminController::class, 'workflowConfigRefresh'])->middleware('throttle:polling')->name('workflow.config.refresh');
+        Route::get('/workflow-config/poll', [AdminController::class, 'workflowConfigPoll'])->middleware('throttle:polling')->name('workflow.config.poll');
         Route::post('/workflow-config', [AdminController::class, 'storeStage'])->name('workflow.store');
         Route::put('/workflow-config/{stage}', [AdminController::class, 'updateStage'])->name('workflow.stages.update');
         Route::post('/workflow-config/{stage}/move-up', [AdminController::class, 'moveStageUp'])->name('workflow.stages.moveUp');
@@ -190,37 +190,37 @@ Route::middleware('auth')->group(function () {
         Route::delete('/workflow-config/{stage}', [AdminController::class, 'destroyStage'])->name('workflow.stages.destroy');
 
         Route::get('/calendar', [AdminController::class, 'calendar'])->name('calendar');
-        Route::get('/calendar/refresh', [AdminController::class, 'calendarRefresh'])->middleware('throttle:30,1')->name('calendar.refresh');
-        Route::get('/calendar/poll', [AdminController::class, 'calendarPoll'])->middleware('throttle:30,1')->name('calendar.poll');
+        Route::get('/calendar/refresh', [AdminController::class, 'calendarRefresh'])->middleware('throttle:polling')->name('calendar.refresh');
+        Route::get('/calendar/poll', [AdminController::class, 'calendarPoll'])->middleware('throttle:polling')->name('calendar.poll');
         Route::post('/calendar/holidays', [AdminController::class, 'storeHoliday'])->name('calendar.holidays.store');
         Route::delete('/calendar/holidays/{holiday}', [AdminController::class, 'destroyHoliday'])->name('calendar.holidays.destroy');
         Route::get('/calendar/documents/{date}', [AdminController::class, 'documentsOnDate'])
             ->where('date', '\d{4}-\d{2}-\d{2}')
-            ->middleware('throttle:30,1')
+            ->middleware('throttle:polling')
             ->name('calendar.documentsOnDate');
 
         Route::get('/sla-violations', [AdminController::class, 'violationsReport'])->name('sla.violations');
         // Live search (Feature: instant results as you type) — returns just
         // the results fragment, same pattern as archive.refresh.
         Route::get('/sla-violations/refresh', [AdminController::class, 'violationsRefresh'])
-            ->middleware('throttle:30,1')->name('sla.violations.refresh');
+            ->middleware('throttle:polling')->name('sla.violations.refresh');
         Route::get('/sla-violations/poll', [AdminController::class, 'violationsPoll'])
-            ->middleware('throttle:30,1')->name('sla.violations.poll');
+            ->middleware('throttle:polling')->name('sla.violations.poll');
 
         Route::get('/audit-logs', [AdminController::class, 'auditLogs'])->name('audit.logs');
-        Route::get('/audit-logs/refresh', [AdminController::class, 'auditLogsRefresh'])->middleware('throttle:30,1')->name('audit.logs.refresh');
-        Route::get('/audit-logs/poll', [AdminController::class, 'auditLogsPoll'])->middleware('throttle:30,1')->name('audit.logs.poll');
+        Route::get('/audit-logs/refresh', [AdminController::class, 'auditLogsRefresh'])->middleware('throttle:polling')->name('audit.logs.refresh');
+        Route::get('/audit-logs/poll', [AdminController::class, 'auditLogsPoll'])->middleware('throttle:polling')->name('audit.logs.poll');
 
         // Document Tracking module: every document ever submitted, in one
         // place, permanently — unlike Archive (approved only) or the SLA
         // queue (breached only), nothing here is ever filtered out by
         // outcome, and nothing gets removed once a document finishes.
         Route::get('/documents', [AdminController::class, 'documents'])->name('documents.index');
-        Route::get('/documents/refresh', [AdminController::class, 'documentsRefresh'])->middleware('throttle:30,1')->name('documents.index.refresh');
-        Route::get('/documents/poll', [AdminController::class, 'documentsPoll'])->middleware('throttle:30,1')->name('documents.index.poll');
+        Route::get('/documents/refresh', [AdminController::class, 'documentsRefresh'])->middleware('throttle:polling')->name('documents.index.refresh');
+        Route::get('/documents/poll', [AdminController::class, 'documentsPoll'])->middleware('throttle:polling')->name('documents.index.poll');
 
         Route::get('/archive', [ArchiveController::class, 'index'])->name('archive');
-        Route::post('/archive/legacy', [ArchiveController::class, 'storeLegacy'])->middleware('throttle:20,1')->name('archive.legacy');
+        Route::post('/archive/legacy', [ArchiveController::class, 'storeLegacy'])->middleware('throttle:mutations')->name('archive.legacy');
     });
 
     // Archive download and live-search refresh are shared across all three
@@ -237,7 +237,7 @@ Route::middleware('auth')->group(function () {
     // every other live-poll endpoint in this app.
     Route::middleware('role:admin,originator,approver')
         ->get('/archive/refresh', [ArchiveController::class, 'refresh'])
-        ->middleware('throttle:30,1')
+        ->middleware('throttle:polling')
         ->name('archive.refresh');
 
     // Admin may also inspect any document's tracking page for support purposes.
@@ -258,7 +258,7 @@ Route::middleware('auth')->group(function () {
     // poll endpoints since it's a fast ~8s cadence rather than 45-75s.
     Route::middleware('role:admin,originator,approver')
         ->get('/documents/{document}/presence', [DocumentController::class, 'presence'])
-        ->middleware('throttle:60,1')
+        ->middleware('throttle:presence')
         ->name('documents.presence');
 
     // Explicit "I closed the viewer" beacon — see presence() above and
@@ -266,6 +266,6 @@ Route::middleware('auth')->group(function () {
     // still lands even when sent from a pagehide/unload handler.
     Route::middleware('role:admin,originator,approver')
         ->post('/documents/{document}/presence-leave', [DocumentController::class, 'presenceLeave'])
-        ->middleware('throttle:60,1')
+        ->middleware('throttle:presence')
         ->name('documents.presence.leave');
 });

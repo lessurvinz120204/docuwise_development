@@ -54,9 +54,15 @@
 
     @else
 
-    <div class="grid grid-cols-1 {{ auth()->user()->isAdmin() ? 'lg:grid-cols-3' : '' }} gap-6">
-
-        <div class="{{ auth()->user()->isAdmin() ? 'lg:col-span-2' : '' }} space-y-6">
+    {{-- Single column, full width, always — the Approved Documents table
+         needs the whole page (6 data columns including three full
+         date+time columns, plus a 3-button action group per row) to avoid
+         its own internal horizontal scroll. Import Legacy Document used to
+         sit permanently beside it in a fixed side column, squeezing the
+         table into two-thirds width; it's a collapsible section below
+         instead now — an occasional admin action doesn't need permanent
+         real estate the way the always-relevant list does. --}}
+    <div class="space-y-6">
 
             {{-- Search / filter bar — inputs are live (see script below):
                  typing/changing any of these fetches fresh results from the
@@ -121,36 +127,46 @@
                 </form>
             </div>
 
-            <div id="archive-results" data-refresh-url="{{ route('archive.refresh') }}" data-user-id="{{ auth()->id() }}">
-                @include('archive.partials.results')
-            </div>
-        </div>
-
         @if(auth()->user()->isAdmin())
-        <div>
-            <div class="bg-white rounded-xl shadow-card border border-surface-200 p-6">
-                <h2 class="text-sm font-semibold text-surface-900 mb-1">Import Legacy Document</h2>
+        {{-- Collapsed by default — same <details>/<summary> accordion
+             pattern already used elsewhere in this app (e.g. SLA
+             Violations' "View All Approvers" section), so an occasional
+             action like this doesn't permanently take up space the table
+             needs more. --}}
+        <details class="bg-white rounded-xl shadow-card border border-surface-200 overflow-hidden group [&_summary::-webkit-details-marker]:hidden">
+            <summary class="px-6 py-4 cursor-pointer select-none text-sm font-semibold text-primary-700 hover:bg-surface-50 flex items-center gap-2">
+                <svg class="w-4 h-4 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                Import Legacy Document
+            </summary>
+            <div class="px-6 py-4 bg-surface-50/50 border-t border-surface-200">
                 <p class="text-xs text-surface-500 mb-4">Directly archive a pre-existing, already-approved document — bypasses classification, validation, and the approval workflow.</p>
 
-                <form method="POST" action="{{ route('admin.archive.legacy') }}" enctype="multipart/form-data" class="space-y-3">
+                <form method="POST" action="{{ route('admin.archive.legacy') }}" enctype="multipart/form-data" class="max-w-4xl mx-auto space-y-3">
                     @csrf
                     <div>
                         <label class="block text-xs font-medium text-surface-700 mb-1">File</label>
                         <input type="file" name="file" required accept=".pdf,.docx,.doc,.txt,.png,.jpg,.jpeg"
                             class="w-full text-xs text-surface-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100">
                     </div>
-                    <div>
-                        <label class="block text-xs font-medium text-surface-700 mb-1">Category</label>
-                        <select name="category" required class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
-                            @foreach(\App\Services\ValidationService::knownCategories() as $c)
-                                <option value="{{ $c }}" @selected(request('category') === $c)>{{ $c }}</option>
-                            @endforeach
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-surface-700 mb-1">Title (optional)</label>
-                        <input type="text" name="title" placeholder="Defaults to the file name"
-                            class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    {{-- Side by side now that the form has real width to work
+                         with — File and Reason stay their own full-width
+                         rows (a stretched file picker or textarea would
+                         look odd), but these two short fields pair
+                         naturally. --}}
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-medium text-surface-700 mb-1">Category</label>
+                            <select name="category" required class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                                @foreach(\App\Services\ValidationService::knownCategories() as $c)
+                                    <option value="{{ $c }}" @selected(request('category') === $c)>{{ $c }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-surface-700 mb-1">Title (optional)</label>
+                            <input type="text" name="title" placeholder="Defaults to the file name"
+                                class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-surface-700 mb-1">Reason for direct import <span class="text-rejected-700">*</span></label>
@@ -163,8 +179,12 @@
                     </button>
                 </form>
             </div>
-        </div>
+        </details>
         @endif
+
+            <div id="archive-results" data-refresh-url="{{ route('archive.refresh') }}" data-user-id="{{ auth()->id() }}">
+                @include('archive.partials.results')
+            </div>
     </div>
     @endif
 </div>

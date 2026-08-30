@@ -24,7 +24,7 @@ use Illuminate\Support\Facades\Route;
 */
 
 Route::prefix('v1')->name('api.')->group(function () {
-    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1')->name('login');
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth')->name('login');
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
@@ -32,9 +32,9 @@ Route::prefix('v1')->name('api.')->group(function () {
 
         Route::get('/documents', [DocumentController::class, 'index'])->name('documents.index');
         Route::get('/documents/{document}', [DocumentController::class, 'show'])->name('documents.show');
-        Route::post('/documents', [DocumentController::class, 'store'])->middleware('throttle:20,1')->name('documents.store');
+        Route::post('/documents', [DocumentController::class, 'store'])->middleware('throttle:mutations')->name('documents.store');
 
         Route::get('/assignments', [AssignmentController::class, 'index'])->name('assignments.index');
-        Route::post('/assignments/{assignment}/decide', [AssignmentController::class, 'decide'])->middleware('throttle:20,1')->name('assignments.decide');
+        Route::post('/assignments/{assignment}/decide', [AssignmentController::class, 'decide'])->middleware('throttle:mutations')->name('assignments.decide');
     });
 });

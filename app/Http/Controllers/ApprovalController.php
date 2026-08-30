@@ -326,7 +326,7 @@ class ApprovalController extends Controller
 
     public function decide(Request $request, DocumentAssignment $assignment)
     {
-        abort_unless($assignment->user_id === $request->user()->user_id, 403);
+        $this->authorize('decide', $assignment);
 
         $validated = $request->validate([
             'decision' => ['required', 'in:approved,rejected'],

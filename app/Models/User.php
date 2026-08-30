@@ -28,8 +28,19 @@ class User extends Authenticatable implements MustVerifyEmail
 
     protected $primaryKey = 'user_id';
 
+    /**
+     * Fixed department list, same lightweight "hardcoded, validated string"
+     * pattern ValidationService::knownCategories() already uses for
+     * document categories — not a separate Department table, for
+     * consistency with how this app already models small fixed lists.
+     */
+    private const DEPARTMENTS = ['Engineering', 'Finance'];
+
+    /** staff = ordinary functional-stage reviewer; head = sits on a category's Final Approval stage. */
+    private const LEVELS = ['staff', 'head'];
+
     protected $fillable = [
-        'username', 'password_hash', 'full_name', 'email', 'role', 'assigned_category', 'is_busy', 'created_by', 'is_active',
+        'username', 'password_hash', 'full_name', 'email', 'role', 'assigned_category', 'department', 'level', 'is_busy', 'created_by', 'is_active',
     ];
 
     protected $hidden = ['password_hash', 'remember_token'];
@@ -74,6 +85,20 @@ class User extends Authenticatable implements MustVerifyEmail
     public function isAdmin(): bool { return $this->role === 'admin'; }
     public function isOriginator(): bool { return $this->role === 'originator'; }
     public function isApprover(): bool { return $this->role === 'approver'; }
+
+    // --- Department / level helpers ---
+    public function isHead(): bool { return $this->level === 'head'; }
+    public function isStaffLevel(): bool { return $this->level === 'staff'; }
+
+    public static function knownDepartments(): array
+    {
+        return self::DEPARTMENTS;
+    }
+
+    public static function knownLevels(): array
+    {
+        return self::LEVELS;
+    }
 
     // --- Relationships ---
     public function createdBy()

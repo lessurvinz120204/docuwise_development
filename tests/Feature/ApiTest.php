@@ -173,3 +173,76 @@ it('logs api_logout to the audit trail', function () {
     expect($log)->not->toBeNull();
     expect($log->description)->toContain('test-device');
 });
+
+it('lets an originator view their own document via the API', function () {
+    $originator = User::factory()->originator()->create();
+
+    $document = DocumentRepository::create([
+        'originator_id' => $originator->user_id, 'title' => 'mine.txt', 'file_path' => 'documents/mine.txt',
+        'mime_type' => 'text/plain', 'ml_category' => 'Job Order', 'is_validated' => true,
+        'due_date' => now()->addHours(2), 'global_status' => 'classified_validated',
+    ]);
+
+    $response = $this->actingAs($originator, 'sanctum')->getJson("/api/v1/documents/{$document->document_id}");
+
+    $response->assertOk()->assertJson(['data' => ['title' => 'mine.txt']]);
+});
+
+it("blocks an originator from viewing someone else's document via the API", function () {
+    $owner = User::factory()->originator()->create();
+    $someoneElse = User::factory()->originator()->create();
+
+    $document = DocumentRepository::create([
+        'originator_id' => $owner->user_id, 'title' => 'not-yours.txt', 'file_path' => 'documents/not-yours.txt',
+        'mime_type' => 'text/plain', 'ml_category' => 'Job Order', 'is_validated' => true,
+        'due_date' => now()->addHours(2), 'global_status' => 'classified_validated',
+    ]);
+
+    $this->actingAs($someoneElse, 'sanctum')
+        ->getJson("/api/v1/documents/{$document->document_id}")
+        ->assertStatus(403);
+});
+
+it('lets an admin view any document via the API', function () {
+    $originator = User::factory()->originator()->create();
+    $admin = User::factory()->admin()->create();
+
+    $document = DocumentRepository::create([
+        'originator_id' => $originator->user_id, 'title' => 'someones.txt', 'file_path' => 'documents/someones.txt',
+        'mime_type' => 'text/plain', 'ml_category' => 'Job Order', 'is_validated' => true,
+        'due_date' => now()->addHours(2), 'global_status' => 'classified_validated',
+    ]);
+
+    $this->actingAs($admin, 'sanctum')
+        ->getJson("/api/v1/documents/{$document->document_id}")
+        ->assertOk();
+});
+
+it("only lists an approver's own assignments via the API", function () {
+    $originator = User::factory()->originator()->create();
+    $mine = User::factory()->approver('Job Order')->create();
+    $someoneElse = User::factory()->approver('Job Order')->create();
+    $stage = WorkflowStage::where('stage_name', 'Technical Review')->first();
+
+    $document = DocumentRepository::create([
+        'originator_id' => $originator->user_id, 'title' => 'doc.txt', 'file_path' => 'documents/doc.txt',
+        'mime_type' => 'text/plain', 'ml_category' => 'Job Order', 'is_validated' => true,
+        'due_date' => now()->addHours(2), 'global_status' => 'classified_validated',
+    ]);
+    $myAssignment = DocumentAssignment::create([
+        'document_id' => $document->document_id, 'stage_id' => $stage->stage_id, 'user_id' => $mine->user_id,
+        'individual_status' => 'pending', 'sla_expires_at' => now()->addHour(), 'priority_rank' => 1,
+        'escalated_to_admin' => false, 'auto_approved' => false,
+    ]);
+    DocumentAssignment::create([
+        'document_id' => $document->document_id, 'stage_id' => $stage->stage_id, 'user_id' => $someoneElse->user_id,
+        'individual_status' => 'pending', 'sla_expires_at' => now()->addHour(), 'priority_rank' => 1,
+        'escalated_to_admin' => false, 'auto_approved' => false,
+    ]);
+
+    $response = $this->actingAs($mine, 'sanctum')->getJson('/api/v1/assignments');
+
+    $response->assertOk();
+    expect($response->json('data'))->toHaveCount(1);
+    expect($response->json('data.0.id'))->toBe($myAssignment->assignment_id);
+});

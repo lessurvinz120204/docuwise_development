@@ -18,7 +18,9 @@ use Carbon\Carbon;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Throwable;
 
 /**
  * WorkflowService
@@ -227,8 +229,31 @@ class WorkflowService
                     "Resubmitted as version {$document->version_number}, revising rejected document #{$revisionOf->document_id} ('{$revisionOf->title}').");
             }
 
-            // 3.1 + 3.2 — extraction & preprocessing
-            $extraction = $this->extractor->extract($file);
+            // 3.1 + 3.2 — extraction & preprocessing.
+            //
+            // Deliberately try/catch, not left to bubble up: $file->store()
+            // above already wrote the physical file to disk BEFORE this
+            // point, and storage writes are not part of this DB::transaction
+            // — an uncaught exception here would roll back the
+            // DocumentRepository row (and its audit log) while leaving the
+            // uploaded file orphaned on disk with no record pointing to it,
+            // and hand the originator a raw 500 instead of an explanation.
+            // Converging on the exact same persisted "extraction_failed"
+            // path already used for genuinely-too-short text below keeps
+            // there being exactly one way this failure mode is handled.
+            try {
+                $extraction = $this->extractor->extract($file);
+            } catch (Throwable $e) {
+                Log::error('Text extraction threw for document upload', [
+                    'originator_id' => $originator->user_id,
+                    'file' => $document->title,
+                    'mime' => $document->mime_type,
+                    'exception' => $e->getMessage(),
+                ]);
+
+                return $this->failExtraction($document, $originator, null);
+            }
+
             $document->ocr_text = $extraction['text'];
             $document->used_ocr_fallback = $extraction['used_ocr_fallback'];
 
@@ -237,27 +262,25 @@ class WorkflowService
             // instead of running it through category validation and
             // surfacing a confusing "0 words; minimum 30" message.
             if (mb_strlen(trim($extraction['text'])) < self::MIN_EXTRACTED_CHARS) {
-                $document->ml_category = null;
-                $document->ml_confidence = 0;
-                $document->is_validated = false;
-                $document->validation_errors = [
-                    $this->extractionFailureMessage($extraction['failure_reason'] ?? null),
-                ];
-                $document->global_status = 'processing';
-                $document->save();
-
-                AuditLog::record(null, $document->document_id, 'extraction_failed',
-                    "Text extraction produced no usable content for '{$document->title}' " .
-                    "(mime: {$document->mime_type}). Classification and validation were skipped.");
-
-                NotificationRecord::send($originator->user_id, $document->document_id,
-                    "Your document '{$document->title}' could not be read by the system. " . $document->validation_errors[0]);
-
-                return $document->fresh();
+                return $this->failExtraction($document, $originator, $extraction['failure_reason'] ?? null);
             }
 
-            // 3.3 — classification
-            $result = $this->classifier->classify($extraction['text']);
+            // 3.3 — classification. Same reasoning as the extraction
+            // try/catch above: a thrown exception here (e.g. a missing or
+            // corrupted model file) must not silently roll back a document
+            // row that already has a real file sitting in storage.
+            try {
+                $result = $this->classifier->classify($extraction['text']);
+            } catch (Throwable $e) {
+                Log::error('Classification threw for document upload', [
+                    'originator_id' => $originator->user_id,
+                    'file' => $document->title,
+                    'exception' => $e->getMessage(),
+                ]);
+
+                return $this->failExtraction($document, $originator, null);
+            }
+
             $document->ml_category = $result['category'];
             $document->ml_confidence = $result['confidence'];
             $document->model_id = $result['model_id'];
@@ -373,6 +396,35 @@ class WorkflowService
     }
 
     /**
+     * The single persisted-failure path shared by ingest(): reached either
+     * when extraction produced too little text to be usable, or when
+     * extraction/classification threw outright (see the try/catch blocks
+     * above). Either way, the document row is saved as 'processing' with a
+     * clear validation_errors message rather than left to roll back —
+     * critically, $document already has a real file in storage by this
+     * point (see ingest()'s docblock on the try/catch), so the row must
+     * survive to keep pointing at it.
+     */
+    private function failExtraction(DocumentRepository $document, User $originator, ?string $reason): DocumentRepository
+    {
+        $document->ml_category = null;
+        $document->ml_confidence = 0;
+        $document->is_validated = false;
+        $document->validation_errors = [$this->extractionFailureMessage($reason)];
+        $document->global_status = 'processing';
+        $document->save();
+
+        AuditLog::record(null, $document->document_id, 'extraction_failed',
+            "Text extraction produced no usable content for '{$document->title}' " .
+            "(mime: {$document->mime_type}). Classification and validation were skipped.");
+
+        NotificationRecord::send($originator->user_id, $document->document_id,
+            "Your document '{$document->title}' could not be read by the system. " . $document->validation_errors[0]);
+
+        return $document->fresh();
+    }
+
+    /**
      * Builds a specific, actionable message for why extraction produced no
      * usable text — reflecting the actual diagnosed cause from
      * TextExtractionService rather than a generic hedge ("may not be
@@ -482,19 +534,38 @@ class WorkflowService
 
     /**
      * Every eligible approver for a specific stage: matching category,
-     * active account, and either unrestricted (no specific stage picks —
-     * eligible for every stage in their category by default) or
-     * explicitly assigned to this stage. assignStage() gives every one of
-     * these a seat; only findReplacementApprover() further narrows this
-     * pool down to a single winner (via rankApprovers()).
+     * active account, department alignment (see below), and either
+     * unrestricted (no specific stage picks — eligible for every stage in
+     * their category by default) or explicitly assigned to this stage.
+     * assignStage() gives every one of these a seat; only
+     * findReplacementApprover() further narrows this pool down to a single
+     * winner (via rankApprovers()).
+     *
+     * Department check: a stage with no WorkflowStageDepartment rows at all
+     * is unrestricted by department (same backward-compatible convention as
+     * the stage-restriction check below) — this only ever narrows an
+     * already-explicit stage assignment, never silently blocks a stage that
+     * hasn't been tagged with department ownership yet. Where a stage DOES
+     * have department rows, an approver's own department must be among
+     * them — this is deliberately redundant with the account-creation-time
+     * validation in AdminController (only stages belonging to the chosen
+     * department are ever offered/accepted there); this exists as a
+     * second, independent guarantee at the point routing actually happens,
+     * not because the first check is expected to fail.
      */
     private function eligibleApproversForStage(DocumentRepository $document, WorkflowStage $stage): Collection
     {
+        $stageDepartments = $stage->departmentNames();
+
         return User::where('role', 'approver')
             ->where('is_active', true)
             ->where('assigned_category', $document->ml_category)
             ->get()
-            ->filter(function (User $approver) use ($stage) {
+            ->filter(function (User $approver) use ($stage, $stageDepartments) {
+                if ($stageDepartments !== [] && !in_array($approver->department, $stageDepartments, true)) {
+                    return false;
+                }
+
                 $assignedStageIds = $approver->workflowStages()->pluck('workflow_stages.stage_id');
                 // No explicit stage picks -> eligible for every stage in their category (default).
                 return $assignedStageIds->isEmpty() || $assignedStageIds->contains($stage->stage_id);
@@ -724,53 +795,63 @@ class WorkflowService
 
         $priorityRank = $this->computePriority($document->due_date);
 
-        foreach ($approvers as $approver) {
-            $assignment = DocumentAssignment::create([
-                'document_id' => $document->document_id,
-                'user_id' => $approver->user_id,
-                'stage_id' => $stage->stage_id,
-                'due_date' => $document->due_date,
-                'priority_rank' => $priorityRank,
-                'individual_status' => 'pending',
-                'sla_expires_at' => $slaExpiresAt,
-            ]);
+        // Wrapped in its own transaction — this creates one DocumentAssignment
+        // row per eligible approver in a loop; a failure partway through
+        // (e.g. seat 2 of 3) would otherwise leave a stage only PARTIALLY
+        // routed, with no error surfaced to explain why some eligible
+        // approvers never got a seat. A nested transaction is safe here
+        // regardless of whether the caller already has one open (ingest()'s
+        // normal routing path does; completeStage()'s next-stage safety net
+        // does not) — Laravel uses a savepoint for the inner one.
+        DB::transaction(function () use ($document, $stage, $slaExpiresAt, $approvers, $priorityRank) {
+            foreach ($approvers as $approver) {
+                $assignment = DocumentAssignment::create([
+                    'document_id' => $document->document_id,
+                    'user_id' => $approver->user_id,
+                    'stage_id' => $stage->stage_id,
+                    'due_date' => $document->due_date,
+                    'priority_rank' => $priorityRank,
+                    'individual_status' => 'pending',
+                    'sla_expires_at' => $slaExpiresAt,
+                ]);
 
-            // True event-driven escalation (Section 4/5): fires at the exact
-            // deadline instant instead of waiting for the next periodic sweep —
-            // see EscalateAssignmentJob's docblock for the staleness guard that
-            // makes this safe across later recalculation. Each seat escalates
-            // completely independently of its siblings.
-            EscalateAssignmentJob::dispatch($assignment->assignment_id, $slaExpiresAt)->delay($slaExpiresAt);
+                // True event-driven escalation (Section 4/5): fires at the exact
+                // deadline instant instead of waiting for the next periodic sweep —
+                // see EscalateAssignmentJob's docblock for the staleness guard that
+                // makes this safe across later recalculation. Each seat escalates
+                // completely independently of its siblings.
+                EscalateAssignmentJob::dispatch($assignment->assignment_id, $slaExpiresAt)->delay($slaExpiresAt);
 
-            NotificationRecord::send($approver->user_id, $document->document_id,
-                "New document assigned for '{$stage->stage_name}': {$document->title}.");
-
-            if ($approver->email) {
-                Mail::to($approver->email)->queue(new DocumentAssignedMail($document, $stage, $approver));
-            }
-
-            // A SEPARATE, extra-urgent notification for assignments born
-            // with an already-tight window — reuses the exact "Urgent"
-            // threshold (urgencyRank() === 1, 30 minutes or less of real
-            // remaining time) already shown as a badge everywhere this
-            // assignment appears, rather than a new, separately-invented
-            // number. A short-due-date document's flat 15-minute SLA
-            // window (see tieredApproverSlaMinutes()) always qualifies —
-            // this makes sure the approver is actively told the instant it
-            // happens instead of only seeing a badge if they happen to
-            // check their queue in time.
-            if ($assignment->urgencyRank() === 1) {
                 NotificationRecord::send($approver->user_id, $document->document_id,
-                    "URGENT: '{$document->title}' (stage '{$stage->stage_name}') has a very short window to act — " .
-                    'please review it now.',
-                    'high');
-            }
-        }
+                    "New document assigned for '{$stage->stage_name}': {$document->title}.");
 
-        AuditLog::record(null, $document->document_id, 'route',
-            "Stage '{$stage->stage_name}': assigned to all {$approvers->count()} eligible approver(s) " .
-            "(category '{$document->ml_category}') — {$approvers->pluck('full_name')->implode(', ')}. " .
-            "SLA window expires {$slaExpiresAt->toDayDateTimeString()} for each; the stage completes once every one has responded.");
+                if ($approver->email) {
+                    Mail::to($approver->email)->queue(new DocumentAssignedMail($document, $stage, $approver));
+                }
+
+                // A SEPARATE, extra-urgent notification for assignments born
+                // with an already-tight window — reuses the exact "Urgent"
+                // threshold (urgencyRank() === 1, 30 minutes or less of real
+                // remaining time) already shown as a badge everywhere this
+                // assignment appears, rather than a new, separately-invented
+                // number. A short-due-date document's flat 15-minute SLA
+                // window (see tieredApproverSlaMinutes()) always qualifies —
+                // this makes sure the approver is actively told the instant it
+                // happens instead of only seeing a badge if they happen to
+                // check their queue in time.
+                if ($assignment->urgencyRank() === 1) {
+                    NotificationRecord::send($approver->user_id, $document->document_id,
+                        "URGENT: '{$document->title}' (stage '{$stage->stage_name}') has a very short window to act — " .
+                        'please review it now.',
+                        'high');
+                }
+            }
+
+            AuditLog::record(null, $document->document_id, 'route',
+                "Stage '{$stage->stage_name}': assigned to all {$approvers->count()} eligible approver(s) " .
+                "(category '{$document->ml_category}') — {$approvers->pluck('full_name')->implode(', ')}. " .
+                "SLA window expires {$slaExpiresAt->toDayDateTimeString()} for each; the stage completes once every one has responded.");
+        });
     }
 
     /**
@@ -845,19 +926,27 @@ class WorkflowService
      */
     public function withdrawAssignment(DocumentAssignment $assignment, User $oldApprover, ?string $reason = null): void
     {
-        $assignment->individual_status = 'withdrawn';
-        $assignment->acted_at = now();
-        $assignment->reassigned_at = now();
-        $assignment->reassigned_from = $oldApprover->user_id;
-        $assignment->reassignment_reason = $reason;
-        $assignment->save();
+        // Wrapped in a transaction — unlike decide() and adminDecideUnassigned(),
+        // this was previously the one caller of completeStage() that ran
+        // outside any transaction at all, so a failure partway through
+        // completeStage()'s own downstream writes (the next-stage assignStage()
+        // safety net, or the document-finalization save) could leave the
+        // withdrawal itself committed but the rest half-done.
+        DB::transaction(function () use ($assignment, $oldApprover, $reason) {
+            $assignment->individual_status = 'withdrawn';
+            $assignment->acted_at = now();
+            $assignment->reassigned_at = now();
+            $assignment->reassigned_from = $oldApprover->user_id;
+            $assignment->reassignment_reason = $reason;
+            $assignment->save();
 
-        AuditLog::record(null, $assignment->document_id, 'assignment_withdrawn',
-            "Seat on stage '{$assignment->stage->stage_name}' for '{$assignment->document->title}' withdrawn — " .
-            "{$oldApprover->full_name}'s account was deactivated and another approver already covers this stage." .
-            ($reason ? " Reason: \"{$reason}\"" : ''));
+            AuditLog::record(null, $assignment->document_id, 'assignment_withdrawn',
+                "Seat on stage '{$assignment->stage->stage_name}' for '{$assignment->document->title}' withdrawn — " .
+                "{$oldApprover->full_name}'s account was deactivated and another approver already covers this stage." .
+                ($reason ? " Reason: \"{$reason}\"" : ''));
 
-        $this->completeStage($assignment, 'approved');
+            $this->completeStage($assignment, 'approved');
+        });
     }
 
     /**

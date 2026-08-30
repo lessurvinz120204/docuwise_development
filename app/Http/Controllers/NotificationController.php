@@ -70,7 +70,7 @@ class NotificationController extends Controller
 
     public function markRead(Request $request, NotificationRecord $notification)
     {
-        abort_unless($notification->recipient_id === $request->user()->user_id, 403);
+        $this->authorize('markRead', $notification);
 
         $notification->update(['is_read' => true]);
 

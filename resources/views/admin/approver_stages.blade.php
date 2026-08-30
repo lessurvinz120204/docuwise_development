@@ -38,17 +38,46 @@
 
             <div>
                 <label class="block text-xs font-medium text-surface-700 mb-1">
-                    Specific Stages <span class="text-surface-400 font-normal">(optional — leave all unchecked for every stage)</span>
+                    Department <span class="text-surface-400 font-normal">(determines which stages below can be picked)</span>
+                </label>
+                <select name="department" id="edit-department" required
+                    class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    @foreach(\App\Models\User::knownDepartments() as $d)
+                        <option value="{{ $d }}" @selected($user->department === $d)>{{ $d }}</option>
+                    @endforeach
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-surface-700 mb-1">Level</label>
+                <select name="level" required
+                    class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    @foreach(\App\Models\User::knownLevels() as $l)
+                        <option value="{{ $l }}" @selected($user->level === $l)>{{ ucfirst($l) }}</option>
+                    @endforeach
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-surface-700 mb-1">
+                    Specific Stages <span class="text-surface-400 font-normal">(optional — leave all unchecked for every stage this department owns)</span>
                 </label>
                 @foreach($stagesByCategory as $category => $categoryStages)
                     <div class="stage-group space-y-1 {{ $category !== $user->assigned_category ? 'hidden' : '' }}" data-category="{{ $category }}">
                         @forelse($categoryStages as $stage)
-                            <label class="flex items-start gap-3 p-3 rounded-lg border border-surface-200 hover:bg-surface-50 cursor-pointer">
+                            @php($owners = $stage->departmentNames())
+                            <label class="stage-option flex items-start gap-3 p-3 rounded-lg border border-surface-200 hover:bg-surface-50 cursor-pointer"
+                                data-departments="{{ implode(',', $owners) }}">
                                 <input type="checkbox" name="stage_ids[]" value="{{ $stage->stage_id }}"
                                     @checked($category === $user->assigned_category && in_array($stage->stage_id, $assignedStageIds))
                                     class="mt-0.5 rounded border-surface-300 text-primary-700 focus:ring-primary-500">
                                 <span>
-                                    <span class="block text-sm font-medium text-surface-800">{{ $stage->sequence_order }}. {{ $stage->stage_name }}</span>
+                                    <span class="block text-sm font-medium text-surface-800">
+                                        {{ $stage->sequence_order }}. {{ $stage->stage_name }}
+                                        @if($owners)
+                                            <span class="text-surface-400 font-normal">({{ implode(' + ', $owners) }})</span>
+                                        @endif
+                                    </span>
                                     @if($stage->description)
                                         <span class="block text-xs text-surface-400">{{ $stage->description }}</span>
                                     @endif
@@ -71,24 +100,35 @@
 </div>
 
 <script>
-    // Switching category client-side just shows the matching stage-group
-    // and unchecks the rest (they belong to a different category and
-    // won't be submitted anyway since they're hidden .stage-group inputs
-    // outside the selected group — but unchecking keeps the UI honest if
-    // the admin flips back and forth before submitting).
+    // Switching category or department client-side shows only the matching
+    // stage-group + department-owned options, unchecking anything hidden
+    // (they won't be submitted anyway since they're hidden — but unchecking
+    // keeps the UI honest if the admin flips back and forth before submitting).
     (function () {
         const categorySelect = document.getElementById('edit-category');
+        const departmentSelect = document.getElementById('edit-department');
         const stageGroups = document.querySelectorAll('.stage-group');
 
-        categorySelect.addEventListener('change', () => {
+        const refresh = () => {
             stageGroups.forEach((group) => {
-                const isMatch = group.dataset.category === categorySelect.value;
-                group.classList.toggle('hidden', !isMatch);
-                if (!isMatch) {
-                    group.querySelectorAll('input[type=checkbox]').forEach((cb) => { cb.checked = false; });
-                }
+                const categoryMatches = group.dataset.category === categorySelect.value;
+                group.classList.toggle('hidden', !categoryMatches);
+
+                group.querySelectorAll('.stage-option').forEach((option) => {
+                    const owners = option.dataset.departments ? option.dataset.departments.split(',') : [];
+                    const departmentMatches = owners.length === 0 || owners.includes(departmentSelect.value);
+                    const visible = categoryMatches && departmentMatches;
+                    option.classList.toggle('hidden', !visible);
+                    if (!visible) {
+                        option.querySelector('input[type=checkbox]').checked = false;
+                    }
+                });
             });
-        });
+        };
+
+        categorySelect.addEventListener('change', refresh);
+        departmentSelect.addEventListener('change', refresh);
+        refresh();
     })();
 </script>
 @endsection

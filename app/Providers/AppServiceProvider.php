@@ -2,8 +2,18 @@
 
 namespace App\Providers;
 
+use App\Models\DocumentAssignment;
+use App\Models\DocumentRepository;
+use App\Models\NotificationRecord;
+use App\Policies\DocumentAssignmentPolicy;
+use App\Policies\DocumentRepositoryPolicy;
+use App\Policies\NotificationRecordPolicy;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Pagination\Paginator;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
 use Symfony\Component\Mailer\Bridge\Brevo\Transport\BrevoTransportFactory;
@@ -54,5 +64,53 @@ class AppServiceProvider extends ServiceProvider
         // no domain of its own.
         Mail::extend('brevo', fn (array $config) => (new BrevoTransportFactory())
             ->create(new Dsn('brevo+api', 'default', $config['key'] ?? null)));
+
+        $this->registerRateLimiters();
+
+        // Explicit registration rather than relying on Laravel's naming-
+        // convention auto-discovery — matches this app's existing preference
+        // for explicit, readable authorization (see RoleMiddleware / the
+        // routes/web.php header comment on strict RBAC) over implicit
+        // "it just works if you name things right" conventions.
+        Gate::policy(DocumentRepository::class, DocumentRepositoryPolicy::class);
+        Gate::policy(DocumentAssignment::class, DocumentAssignmentPolicy::class);
+        Gate::policy(NotificationRecord::class, NotificationRecordPolicy::class);
+    }
+
+    /**
+     * Named rate limiters, one per tier of route already in use across
+     * routes/web.php and routes/api.php (previously 45 separate inline
+     * throttle:N,1 declarations, one written by hand at each route). Same
+     * limits, same behavior — this only centralizes them so a new route
+     * added later references a named tier ('mutations', 'polling', ...)
+     * instead of needing someone to remember and retype the right numbers,
+     * and so every route in a tier can be retuned in one place.
+     *
+     * Keyed by user ID when authenticated, falling back to IP — matches
+     * Laravel's own default `throttle:N,1` behavior (Illuminate\Routing\
+     * Middleware\ThrottleRequests resolves the same way), so this is a
+     * pure rename, not a behavior change.
+     */
+    private function registerRateLimiters(): void
+    {
+        $byUserOrIp = fn (Request $request) => $request->user()?->getAuthIdentifier() ?? $request->ip();
+
+        // Password reset request/update — the most sensitive, lowest-volume tier.
+        RateLimiter::for('auth-sensitive', fn (Request $request) => Limit::perMinute(5)->by($byUserOrIp($request)));
+
+        // Login attempts and signed one-time links (email verification).
+        RateLimiter::for('auth', fn (Request $request) => Limit::perMinute(10)->by($byUserOrIp($request)));
+
+        // State-changing endpoints: uploads, resubmissions, decisions, ML
+        // staging, legacy archive import.
+        RateLimiter::for('mutations', fn (Request $request) => Limit::perMinute(20)->by($byUserOrIp($request)));
+
+        // Read-only poll/refresh endpoints the various dashboards hit every
+        // few seconds while open — the majority of this app's routes.
+        RateLimiter::for('polling', fn (Request $request) => Limit::perMinute(30)->by($byUserOrIp($request)));
+
+        // Document-viewer presence heartbeat/leave beacons — highest volume,
+        // fires on a short client-side interval while the viewer is open.
+        RateLimiter::for('presence', fn (Request $request) => Limit::perMinute(60)->by($byUserOrIp($request)));
     }
 }

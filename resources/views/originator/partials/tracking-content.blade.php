@@ -6,16 +6,19 @@
     page reload.
 
     Layout (Feature: no more scrolling all the way down just to see the
-    Audit Trail): a 2-column grid on wide screens — the document header +
-    Approval Stages stacked in the left half, Audit Trail alone filling the
-    right half, so it can run its own full height instead of being pushed
-    below everything else. Stacks back to one column on narrow/mobile.
-    Shared by both the Originator's own tracking page and Admin's Document
-    Tracking module, since both route through DocumentController::show()
-    to this same partial.
+    Document Tracker): a 2-column grid on wide screens — the document header +
+    Document Tracker stacked in the left half (Document Tracker sized by JS
+    to exactly fill the remaining space below the header card, see
+    tracking.blade.php's sizeDocumentTracker() — a fixed CSS calc() can't do
+    this correctly since the header card's own height varies with its
+    content: version badge, resubmit form, Imported/Superseded notices,
+    etc.), Approval Stages alone filling the right half. Stacks back to one
+    column on narrow/mobile. Shared by both the Originator's own tracking
+    page and Admin's Document Tracking module, since both route through
+    DocumentController::show() to this same partial.
 --}}
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-    <div class="space-y-6">
+    <div class="space-y-6 flex flex-col">
         <div class="bg-white rounded-xl shadow-card border border-surface-200 p-6">
             <div class="flex items-start justify-between mb-6">
                 <div>
@@ -108,70 +111,79 @@
             @endif
         </div>
 
-        <div class="bg-white rounded-xl shadow-card border border-surface-200 overflow-hidden">
-            <div class="px-6 py-4 border-b border-surface-200">
-                <h3 class="text-sm font-semibold text-surface-900">Approval Stages</h3>
+        {{-- flex-1 + min-h-0: lets this card's own inner scroll area (below)
+             claim exactly the space left over after the header card above
+             it, instead of growing past the viewport and forcing <main>
+             (this app's real scroll container — see layouts/app.blade.php)
+             to scroll the whole page. The precise height is set by JS
+             (sizeDocumentTracker() in tracking.blade.php), recalculated on
+             load/resize/live-refresh — a fixed CSS max-height can't do this
+             correctly since the header card above varies in height. --}}
+        <div id="document-tracker-card" class="bg-white rounded-xl shadow-card border border-surface-200 overflow-hidden flex-1 min-h-0 flex flex-col">
+            <div class="px-6 py-4 border-b border-surface-200 shrink-0">
+                <h3 class="text-sm font-semibold text-surface-900">Document Tracker</h3>
             </div>
-            <div class="p-6">
-                <x-workflow-stage-list :document="$document" />
+            @php $movementTimeline = \App\Services\DocumentMovementTimeline::build($document); @endphp
+            {{-- Scrolls internally instead of the whole page — a long
+                 tracker no longer forces scrolling past everything else on
+                 the page just to read more of it. id targeted by
+                 sizeDocumentTracker() in tracking.blade.php. --}}
+            <div id="document-tracker-scroll" class="overflow-x-auto overflow-y-auto">
+                <table class="w-full text-sm border-collapse">
+                    {{-- No explicit z-index — sticky already paints above the
+                         table's own scrolling rows from normal stacking order
+                         alone; adding one here previously created a stacking
+                         context that won against the notification dropdown
+                         elsewhere on the page (z-30), making Document Tracker
+                         labels incorrectly appear on top of it. --}}
+                    <thead class="sticky top-0 bg-white">
+                        <tr class="border-b-2 border-surface-200 text-left text-[11px] uppercase tracking-wide text-surface-400">
+                            <th class="px-6 py-2 font-medium border-r border-surface-200">Timestamp</th>
+                            <th class="px-4 py-2 font-medium border-r border-surface-200">Action</th>
+                            <th class="px-4 py-2 font-medium border-r border-surface-200">Employee</th>
+                            <th class="px-6 py-2 font-medium">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-surface-200">
+                        @forelse($movementTimeline as $event)
+                            <tr>
+                                <td class="px-6 py-3 text-xs text-surface-400 whitespace-nowrap align-top border-r border-surface-200">{{ $event['timestamp']->format('M j, Y g:i A') }}</td>
+                                <td class="px-4 py-3 align-top border-r border-surface-200">
+                                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap
+                                        {{ $event['kind'] === 'session_group' ? 'bg-primary-50 text-primary-700' : 'bg-surface-100 text-surface-600' }}">
+                                        {{ $event['label'] }}
+                                    </span>
+                                </td>
+                                <td class="px-4 py-3 text-surface-700 font-medium align-top whitespace-nowrap border-r border-surface-200">{{ $event['actor'] }}</td>
+                                <td class="px-6 py-3 text-surface-500 align-top">
+                                    @if($event['kind'] === 'session_group')
+                                        {{-- One row per person, every individual pass
+                                             shown plainly underneath — see
+                                             DocumentMovementTimeline::build()'s docblock. --}}
+                                        {{ $event['note'] }}
+                                        <p class="mt-1 text-xs text-surface-400">{{ $event['passes_detail'] }}</p>
+                                    @else
+                                        {{ $event['note'] }}
+                                    @endif
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="4" class="px-6 py-6 text-center text-sm text-surface-400">No recorded activity yet.</td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 
     <div class="bg-white rounded-xl shadow-card border border-surface-200 overflow-hidden">
         <div class="px-6 py-4 border-b border-surface-200">
-            <h3 class="text-sm font-semibold text-surface-900">Audit Trail</h3>
+            <h3 class="text-sm font-semibold text-surface-900">Approval Stages</h3>
         </div>
-        @php $movementTimeline = \App\Services\DocumentMovementTimeline::build($document); @endphp
-        {{-- Scrolls internally instead of the whole page — a long audit
-             trail no longer forces scrolling past Approval Stages/the rest
-             of the page just to read more of it. --}}
-        <div class="overflow-x-auto overflow-y-auto max-h-[70vh]">
-            <table class="w-full text-sm">
-                {{-- No explicit z-index — sticky already paints above the
-                     table's own scrolling rows from normal stacking order
-                     alone; adding one here previously created a stacking
-                     context that won against the notification dropdown
-                     elsewhere on the page (z-30), making Audit Trail labels
-                     incorrectly appear on top of it. --}}
-                <thead class="sticky top-0 bg-white">
-                    <tr class="border-b border-surface-200 text-left text-[11px] uppercase tracking-wide text-surface-400">
-                        <th class="px-6 py-2 font-medium">Timestamp</th>
-                        <th class="px-4 py-2 font-medium">Action</th>
-                        <th class="px-4 py-2 font-medium">Actor</th>
-                        <th class="px-6 py-2 font-medium">Note</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-surface-100">
-                    @forelse($movementTimeline as $event)
-                        <tr>
-                            <td class="px-6 py-3 text-xs text-surface-400 whitespace-nowrap align-top">{{ $event['timestamp']->format('M j, Y g:i A') }}</td>
-                            <td class="px-4 py-3 align-top">
-                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap
-                                    {{ $event['kind'] === 'session_group' ? 'bg-primary-50 text-primary-700' : 'bg-surface-100 text-surface-600' }}">
-                                    {{ $event['label'] }}
-                                </span>
-                            </td>
-                            <td class="px-4 py-3 text-surface-700 font-medium align-top whitespace-nowrap">{{ $event['actor'] }}</td>
-                            <td class="px-6 py-3 text-surface-500 align-top">
-                                @if($event['kind'] === 'session_group')
-                                    {{-- One row per person, every individual pass
-                                         shown plainly underneath — see
-                                         DocumentMovementTimeline::build()'s docblock. --}}
-                                    {{ $event['note'] }}
-                                    <p class="mt-1 text-xs text-surface-400">{{ $event['passes_detail'] }}</p>
-                                @else
-                                    {{ $event['note'] }}
-                                @endif
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="4" class="px-6 py-6 text-center text-sm text-surface-400">No recorded activity yet.</td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
+        <div class="p-6">
+            <x-workflow-stage-list :document="$document" />
         </div>
     </div>
 </div>

@@ -49,7 +49,7 @@ class DocumentController extends Controller
 
     public function show(Request $request, DocumentRepository $document)
     {
-        abort_unless($document->originator_id === $request->user()->user_id || $request->user()->isAdmin(), 403);
+        $this->authorize('viewTracking', $document);
 
         $document->load(['assignments.stage', 'originator']);
 

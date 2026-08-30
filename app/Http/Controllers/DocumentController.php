@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\DocumentAssignment;
 use App\Models\DocumentRepository;
 use App\Models\DocumentReviewSession;
 use App\Models\SubmissionBatch;
@@ -11,7 +10,9 @@ use App\Services\ValidationService;
 use App\Services\WorkflowService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class DocumentController extends Controller
 {
@@ -163,34 +164,65 @@ class DocumentController extends Controller
             'due_date' => $effectiveDueDate,
         ]);
 
-        $documents = collect($validated['files'])
-            ->map(fn ($file) => $this->workflow->ingest($file, $request->user(), $effectiveDueDate->toDateTimeString(), $batch->batch_id, null, $requiresPrinting));
+        // Per-file try/catch, not a single .map() — each ingest() call
+        // already has its own DB::transaction and commits independently, so
+        // a genuinely unexpected failure (not the known extraction/
+        // classification failure modes, which ingest() now handles
+        // gracefully on its own) on file 3 of 5 must not take down the
+        // request and silently leave the user wondering why only 2 of their
+        // 5 files show up, with no explanation and a raw 500 page.
+        $documents = collect();
+        $failedFiles = [];
 
-        $status = $this->buildSubmissionStatusMessage($documents);
+        foreach ($validated['files'] as $file) {
+            try {
+                $documents->push($this->workflow->ingest(
+                    $file, $request->user(), $effectiveDueDate->toDateTimeString(), $batch->batch_id, null, $requiresPrinting
+                ));
+            } catch (Throwable $e) {
+                Log::error('Unexpected failure ingesting an uploaded document', [
+                    'originator_id' => $request->user()->user_id,
+                    'file' => $file->getClientOriginalName(),
+                    'exception' => $e->getMessage(),
+                ]);
+                $failedFiles[] = $file->getClientOriginalName();
+            }
+        }
+
+        $status = $this->buildSubmissionStatusMessage($documents, $failedFiles);
 
         return redirect()
             ->route('originator.dashboard')
             ->with('status', $status);
     }
 
-    private function buildSubmissionStatusMessage($documents): string
+    private function buildSubmissionStatusMessage($documents, array $failedFiles = []): string
     {
-        if ($documents->count() === 1) {
-            $document = $documents->first();
-            return $document->is_validated
-                ? "'{$document->title}' uploaded, classified as '{$document->ml_category}', and routed for approval."
-                : "'{$document->title}' uploaded but failed validation — see details below.";
+        $failureNote = $failedFiles
+            ? ' ' . count($failedFiles) . ' file(s) hit an unexpected error and were not uploaded (' .
+                implode(', ', $failedFiles) . ') — please try re-uploading just those.'
+            : '';
+
+        if ($documents->isEmpty()) {
+            return 'Your upload could not be processed due to an unexpected error. Please try again.' . $failureNote;
         }
 
-        $failedCount = $documents->reject(fn ($d) => $d->is_validated)->count();
+        if ($documents->count() === 1) {
+            $document = $documents->first();
+            return ($document->is_validated
+                ? "'{$document->title}' uploaded, classified as '{$document->ml_category}', and routed for approval."
+                : "'{$document->title}' uploaded but failed validation — see details below.") . $failureNote;
+        }
+
+        $failedValidation = $documents->reject(fn ($d) => $d->is_validated)->count();
 
         return "{$documents->count()} documents uploaded together and routed as one approval request." .
-            ($failedCount > 0 ? " {$failedCount} failed validation — see details below." : '');
+            ($failedValidation > 0 ? " {$failedValidation} failed validation — see details below." : '') . $failureNote;
     }
 
     public function show(Request $request, DocumentRepository $document)
     {
-        abort_unless($document->originator_id === $request->user()->user_id || $request->user()->isAdmin(), 403);
+        $this->authorize('viewTracking', $document);
 
         $document->load(['assignments.stage', 'assignments.approver', 'auditLogs.user', 'previousVersion', 'nextVersion']);
 
@@ -207,7 +239,7 @@ class DocumentController extends Controller
      */
     public function trackingRefresh(Request $request, DocumentRepository $document)
     {
-        abort_unless($document->originator_id === $request->user()->user_id || $request->user()->isAdmin(), 403);
+        $this->authorize('viewTracking', $document);
 
         $document->load(['assignments.stage', 'assignments.approver', 'auditLogs.user', 'previousVersion', 'nextVersion']);
 
@@ -224,7 +256,7 @@ class DocumentController extends Controller
      */
     public function trackingPoll(Request $request, DocumentRepository $document)
     {
-        abort_unless($document->originator_id === $request->user()->user_id || $request->user()->isAdmin(), 403);
+        $this->authorize('viewTracking', $document);
 
         return response()->json([
             'status' => $document->global_status,
@@ -242,7 +274,7 @@ class DocumentController extends Controller
      */
     public function resubmit(Request $request, DocumentRepository $document)
     {
-        abort_unless($document->originator_id === $request->user()->user_id, 403);
+        $this->authorize('resubmit', $document);
         abort_unless($document->global_status === 'rejected', 409, 'Only a rejected document can be resubmitted.');
 
         $validated = $request->validate([
@@ -261,14 +293,26 @@ class DocumentController extends Controller
 
         $effectiveDueDate = Carbon::parse($validated['due_date']);
 
-        $newDocument = $this->workflow->ingest(
-            $validated['file'],
-            $request->user(),
-            $effectiveDueDate->toDateTimeString(),
-            null, // resubmissions stand alone, not re-attached to the original's (possibly already-resolved) batch
-            $document,
-            $document->requires_printing, // carries forward rather than asking again on every resubmission
-        );
+        try {
+            $newDocument = $this->workflow->ingest(
+                $validated['file'],
+                $request->user(),
+                $effectiveDueDate->toDateTimeString(),
+                null, // resubmissions stand alone, not re-attached to the original's (possibly already-resolved) batch
+                $document,
+                $document->requires_printing, // carries forward rather than asking again on every resubmission
+            );
+        } catch (Throwable $e) {
+            Log::error('Unexpected failure ingesting a resubmitted document', [
+                'originator_id' => $request->user()->user_id,
+                'original_document_id' => $document->document_id,
+                'file' => $validated['file']->getClientOriginalName(),
+                'exception' => $e->getMessage(),
+            ]);
+
+            return redirect()->route('originator.documents.show', $document)
+                ->with('status', 'Your resubmission could not be processed due to an unexpected error. Please try again.');
+        }
 
         $status = $newDocument->is_validated
             ? "Resubmitted as version {$newDocument->version_number}, classified as '{$newDocument->ml_category}', and routed for approval."
@@ -288,11 +332,7 @@ class DocumentController extends Controller
     {
         $user = $request->user();
 
-        $isOwner = $document->originator_id === $user->user_id;
-        $isAdmin = $user->isAdmin();
-        $isAssignedApprover = $this->approverAccessFor($document, $user);
-
-        abort_unless($isOwner || $isAdmin || $isAssignedApprover, 403);
+        $this->authorize('viewFile', $document);
 
         // A review session opens for anyone with a legitimate reviewing
         // stake — any approver or admin — while the document as a whole
@@ -355,11 +395,7 @@ class DocumentController extends Controller
     {
         $user = $request->user();
 
-        $isOwner = $document->originator_id === $user->user_id;
-        $isAdmin = $user->isAdmin();
-        $isAssignedApprover = $this->approverAccessFor($document, $user);
-
-        abort_unless($isOwner || $isAdmin || $isAssignedApprover, 403);
+        $this->authorize('viewFile', $document);
 
         if ($this->countsAsActiveReviewer($document, $user)) {
             DocumentReviewSession::heartbeat($document, $user);
@@ -396,30 +432,18 @@ class DocumentController extends Controller
     {
         $user = $request->user();
 
+        // Previously had no authorization check at all — any authenticated
+        // approver/admin could fire this beacon against any document,
+        // closing a review session they had no real access to. Same
+        // 'viewFile' ability as viewFile()/presence() above, kept symmetric
+        // with them per this method's own docblock.
+        $this->authorize('viewFile', $document);
+
         if ($this->countsAsActiveReviewer($document, $user)) {
             DocumentReviewSession::closeFor($document, $user);
         }
 
         return response()->noContent();
-    }
-
-    /**
-     * Whether $user has ANY assignment row on $document, even an
-     * already-decided one — drives plain view AUTHORIZATION only. An
-     * approver who already decided their seat can still legitimately
-     * look back at a document from Decision History/Archive; whether
-     * that particular visit counts as an active REVIEW SESSION is a
-     * separate question, answered by countsAsActiveReviewer() below.
-     */
-    private function approverAccessFor(DocumentRepository $document, $user): bool
-    {
-        if (!$user->isApprover()) {
-            return false;
-        }
-
-        return DocumentAssignment::where('document_id', $document->document_id)
-            ->where('user_id', $user->user_id)
-            ->exists();
     }
 
     /**

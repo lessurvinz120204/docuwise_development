@@ -46,6 +46,8 @@ it('lets an admin reassign an approver to a different category, resetting stage 
 
     $this->actingAs($admin)->post(route('admin.users.stages.update', $approver), [
         'assigned_category' => 'Purchase Requisition',
+        'department' => 'Finance',
+        'level' => 'staff',
         'stage_ids' => [],
     ])->assertRedirect(route('admin.users'));
 
@@ -62,6 +64,8 @@ it('does not touch an already-pending assignment when the approver is reassigned
 
     $this->actingAs($admin)->post(route('admin.users.stages.update', $approver), [
         'assigned_category' => 'Purchase Requisition',
+        'department' => 'Finance',
+        'level' => 'staff',
         'stage_ids' => [],
     ]);
 
@@ -97,6 +101,8 @@ it('rejects stage_ids that belong to a different category than the one submitted
     // Tampered request: category says Job Order, but the stage_id belongs to Purchase Requisition.
     $this->actingAs($admin)->post(route('admin.users.stages.update', $approver), [
         'assigned_category' => 'Job Order',
+        'department' => 'Engineering',
+        'level' => 'staff',
         'stage_ids' => [$procurementReview->stage_id],
     ]);
 
@@ -109,9 +115,11 @@ it('logs the category reassignment distinctly in the audit trail', function () {
 
     $this->actingAs($admin)->post(route('admin.users.stages.update', $approver), [
         'assigned_category' => 'Purchase Requisition',
+        'department' => 'Finance',
+        'level' => 'staff',
         'stage_ids' => [],
     ]);
 
     $log = AuditLog::where('action_type', 'assign_stages')->latest('timestamp')->firstOrFail();
-    expect($log->description)->toContain("from 'Job Order' to 'Purchase Requisition'");
+    expect($log->description)->toContain("from 'Job Order'")->toContain("to 'Purchase Requisition'/'Finance'");
 });
