@@ -110,7 +110,7 @@ it('drops a stage_id the submitted department does not own when an admin creates
         'level' => 'staff',
         // Tampered: Budget Check belongs to Finance, not Engineering.
         'stage_ids' => [$this->techReview->stage_id, $this->budgetCheck->stage_id],
-        'password' => 'password123',
+        'password' => 'Qz8kVn4RTwmp',
     ]);
 
     $created = User::where('username', 'newengineer')->firstOrFail();

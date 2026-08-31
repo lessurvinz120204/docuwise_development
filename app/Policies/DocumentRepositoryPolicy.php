@@ -31,6 +31,16 @@ class DocumentRepositoryPolicy
 
     public function viewFile(User $user, DocumentRepository $document): bool
     {
+        // Unconditional, even for an Admin — the whole point of blocking
+        // it (see WorkflowService::blockForSecurity()) is that nothing in
+        // this app ever hands the flagged file back out, since opening it
+        // locally afterward is exactly the risk being avoided. The file
+        // still physically exists in storage (inert — never opened or
+        // executed by anything the app itself does), just never served.
+        if ($document->is_security_blocked) {
+            return false;
+        }
+
         return $document->originator_id === $user->user_id
             || $user->isAdmin()
             || $this->isAssignedApprover($user, $document);

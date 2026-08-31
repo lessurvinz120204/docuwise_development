@@ -31,6 +31,7 @@ DB_USERNAME=${{MySQL.MYSQL_USER}}
 DB_PASSWORD=${{MySQL.MYSQL_PASSWORD}}
 
 SESSION_DRIVER=database
+SESSION_SECURE_COOKIE=true       # served over https:// on Railway — keep this true, unlike .env.example's local-dev default
 CACHE_STORE=database
 QUEUE_CONNECTION=database
 BROADCAST_CONNECTION=reverb

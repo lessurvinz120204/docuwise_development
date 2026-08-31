@@ -35,7 +35,14 @@
     // boundary and read as if it had been sliced off mid-rise rather than
     // completing naturally (most noticeable on the Day tab, where the last
     // point is the day's final hour).
-    $VBW = 1000; $VBH = 280; $AXIS_W = 34; $RIGHT_PAD = 16; $TOP_PAD = 12; $BOTTOM_PAD = 12;
+    // VBH (and the rendered height="" on the <svg> below) trimmed from the
+    // original 280/220 together, proportionally — Feature: compact the
+    // Control Center to fit without scrolling. Kept proportional
+    // deliberately: shrinking only the rendered height while leaving VBH
+    // alone would make preserveAspectRatio="none" squash Y harder than X,
+    // visibly distorting the 9px axis labels/gridlines instead of just
+    // shrinking the whole chart uniformly.
+    $VBW = 1000; $VBH = 170; $AXIS_W = 34; $RIGHT_PAD = 16; $TOP_PAD = 8; $BOTTOM_PAD = 8;
     $chartH = $VBH - $TOP_PAD - $BOTTOM_PAD;
     $chartMax = collect($chartRows)->flatMap(fn ($r) => [$r->uploaded, $r->approved, $r->rejected])->max() ?: 1;
     $stepX = count($chartRows) > 1 ? ($VBW - $AXIS_W - $RIGHT_PAD) / (count($chartRows) - 1) : 0;
@@ -139,7 +146,7 @@
     {{-- KPI tiles: this period's headline numbers, with a % trend against
          the immediately preceding period — the scannable summary a chart
          alone can't give you at a glance. --}}
-    <div class="px-5 pt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div class="px-5 pt-3 grid grid-cols-3 sm:grid-cols-5 gap-2">
         @foreach($tiles as $tile)
             @php
                 $trendUp = $tile['trend'] !== null && $tile['trend'] > 0;
@@ -152,10 +159,10 @@
                     default => $tile['value'] !== null ? number_format($tile['value']) : '—',
                 };
             @endphp
-            <div class="rounded-lg border border-surface-200 bg-surface-50/50 px-3.5 py-3">
+            <div class="rounded-lg border border-surface-200 bg-surface-50/50 px-3 py-2">
                 <p class="text-[11px] font-medium text-surface-500 uppercase tracking-wide truncate">{{ $tile['label'] }}</p>
-                <div class="flex items-baseline gap-1.5 mt-1 flex-wrap">
-                    <span class="text-xl font-semibold text-surface-900 tabular-nums">{{ $displayValue }}</span>
+                <div class="flex items-baseline gap-1.5 mt-0.5 flex-wrap">
+                    <span class="text-lg font-semibold text-surface-900 tabular-nums">{{ $displayValue }}</span>
                     @if($tile['trend'] !== null)
                         <span class="text-xs font-medium {{ $trendColor }} inline-flex items-center gap-0.5" title="vs previous {{ $panel['trend_label'] }}">
                             @if($trendUp)
@@ -225,7 +232,7 @@
                     opacity: 1;
                 }
             </style>
-            <svg class="analytics-chart-svg block w-full cursor-crosshair" viewBox="0 0 {{ $VBW }} {{ $VBH }}" preserveAspectRatio="none" width="100%" height="220" data-points="{{ json_encode($jsPoints) }}">
+            <svg class="analytics-chart-svg block w-full cursor-crosshair" viewBox="0 0 {{ $VBW }} {{ $VBH }}" preserveAspectRatio="none" width="100%" height="135" data-points="{{ json_encode($jsPoints) }}">
                 <defs>
                     <linearGradient id="analyticsUploadedFill" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stop-color="#5a8cc2" stop-opacity="0.28" />
@@ -282,7 +289,7 @@
             <p class="text-xs text-surface-400 py-6 text-center">No data yet for this range.</p>
         @endif
     </div>
-    <div class="h-3"></div>
+    <div class="h-2"></div>
 
     {{-- Demoted behind a toggle — the KPI tiles + chart above already
          answer "how are things going," this is only for someone who wants

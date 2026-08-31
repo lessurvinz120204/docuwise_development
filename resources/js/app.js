@@ -1,5 +1,124 @@
 import './echo';
 
+// Eye-icon toggle for any password field — delegated on document rather
+// than bound per-input, so it works on every page that includes app.js
+// (login, password reset, Admin's Create Account form) with zero
+// per-page wiring, and keeps working even if that markup is ever swapped
+// in via a live-refresh fragment. Markup contract: a button with
+// data-toggle-password="<input id>", containing two SVGs marked
+// data-eye-open / data-eye-closed (one hidden at a time).
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-toggle-password]');
+    if (!btn) return;
+
+    const input = document.getElementById(btn.dataset.togglePassword);
+    if (!input) return;
+
+    const isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+    btn.querySelector('[data-eye-open]')?.classList.toggle('hidden', isHidden);
+    btn.querySelector('[data-eye-closed]')?.classList.toggle('hidden', !isHidden);
+});
+
+// Live password-strength checklist (x-password-requirements) — delegated
+// init on DOMContentLoaded rather than per-page JS, matching the
+// data-toggle-password pattern above. Markup contract: a <ul
+// data-password-requirements-for="<input id>"> containing <li
+// data-rule="length|uppercase|lowercase|number|uncompromised"> items,
+// each with data-icon-unmet/-met/(-bad for the last one) SVGs.
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-password-requirements-for]').forEach((list) => {
+        const input = document.getElementById(list.dataset.passwordRequirementsFor);
+        if (!input) return;
+
+        const staticRules = {
+            length: (v) => v.length >= 8,
+            uppercase: (v) => /[A-Z]/.test(v),
+            lowercase: (v) => /[a-z]/.test(v),
+            number: (v) => /[0-9]/.test(v),
+        };
+
+        function setState(li, state) {
+            li.querySelector('[data-icon-unmet]')?.classList.toggle('hidden', state !== 'idle');
+            li.querySelector('[data-icon-met]')?.classList.toggle('hidden', state !== 'met');
+            li.querySelector('[data-icon-bad]')?.classList.toggle('hidden', state !== 'bad');
+            li.classList.remove('text-surface-400', 'text-approved-700', 'text-rejected-700');
+            li.classList.add(state === 'met' ? 'text-approved-700' : state === 'bad' ? 'text-rejected-700' : 'text-surface-400');
+        }
+
+        function updateStaticRules() {
+            Object.keys(staticRules).forEach((rule) => {
+                const li = list.querySelector(`[data-rule="${rule}"]`);
+                if (li) setState(li, staticRules[rule](input.value) ? 'met' : 'idle');
+            });
+        }
+
+        // The one rule that can't be judged locally — "has this exact
+        // password shown up in a known data breach." Calls the same
+        // free, keyless Pwned Passwords API Laravel's own
+        // uncompromised() rule already calls server-side at submit
+        // (see PasswordRule::uncompromised() in AdminController/
+        // AuthController), just from the browser too, so it can surface
+        // a moment after typing pauses instead of only after a failed
+        // submit. K-anonymity: only the first 5 characters of the
+        // password's SHA-1 hash are ever sent — never the password, and
+        // never even its full hash.
+        const breachLi = list.querySelector('[data-rule="uncompromised"]');
+        const breachText = breachLi?.querySelector('[data-status-text]');
+        let breachTimer = null;
+        let breachRequestId = 0;
+
+        async function checkBreach(value) {
+            if (!breachLi) return;
+            const thisRequestId = ++breachRequestId;
+
+            if (value.length < 8) {
+                setState(breachLi, 'idle');
+                if (breachText) breachText.textContent = 'Not a known leaked password';
+                return;
+            }
+
+            if (breachText) breachText.textContent = 'Checking against known breaches…';
+            setState(breachLi, 'idle');
+
+            try {
+                const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(value));
+                const hashHex = Array.from(new Uint8Array(hashBuffer))
+                    .map((b) => b.toString(16).padStart(2, '0'))
+                    .join('')
+                    .toUpperCase();
+                const prefix = hashHex.slice(0, 5);
+                const suffix = hashHex.slice(5);
+
+                const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`);
+                const body = await res.text();
+                if (thisRequestId !== breachRequestId) return; // superseded by a later keystroke
+
+                const leaked = body.split('\n').some((line) => line.split(':')[0] === suffix);
+                setState(breachLi, leaked ? 'bad' : 'met');
+                if (breachText) {
+                    breachText.textContent = leaked
+                        ? 'This password has appeared in a data breach — choose another'
+                        : 'Not a known leaked password';
+                }
+            } catch {
+                if (thisRequestId !== breachRequestId) return;
+                // Network hiccup client-side — say nothing alarming; the
+                // real gate is still the identical server-side check at
+                // submit time regardless of whether this one succeeded.
+                setState(breachLi, 'idle');
+                if (breachText) breachText.textContent = 'Not a known leaked password';
+            }
+        }
+
+        input.addEventListener('input', () => {
+            updateStaticRules();
+            clearTimeout(breachTimer);
+            breachTimer = setTimeout(() => checkBreach(input.value), 600);
+        });
+    });
+});
+
 // Browsers that support the View Transitions API also honor the
 // @view-transition CSS rule (see app.css) and handle the entire old-page
 // -> new-page crossfade natively on every navigation — no JS needed, and

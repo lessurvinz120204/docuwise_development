@@ -47,6 +47,12 @@
                             Imported directly by an administrator — not classified, validated, or peer-reviewed through the normal approval workflow.
                         </p>
                     @endif
+                    @if($document->is_security_blocked)
+                        <p class="text-xs text-rejected-700 mt-1">
+                            This upload could not be accepted — it failed an automatic security scan and was blocked before reaching any reviewer.
+                            If you believe this is a mistake, resubmit a corrected version below.
+                        </p>
+                    @endif
                     @if($document->previousVersion)
                         <p class="text-xs text-surface-500 mt-1">
                             Resubmission of
@@ -76,10 +82,15 @@
                         @if($document->used_ocr_fallback)
                             &middot; <span class="text-processing-700">OCR fallback used</span>
                         @endif
-                        &middot;
-                        <button type="button"
-                            onclick="openDocumentViewer('{{ route('documents.file', $document) }}', '{{ $document->mime_type }}', '{{ addslashes($document->original_filename ?? $document->title) }}', {{ $document->document_id }})"
-                            class="text-primary-700 hover:underline font-medium">View original file</button>
+                        {{-- Never offered for a security-blocked upload —
+                             see DocumentRepositoryPolicy::viewFile(), which
+                             denies this file to everyone, even an Admin. --}}
+                        @unless($document->is_security_blocked)
+                            &middot;
+                            <button type="button"
+                                onclick="openDocumentViewer('{{ route('documents.file', $document) }}', '{{ $document->mime_type }}', '{{ addslashes($document->original_filename ?? $document->title) }}', {{ $document->document_id }})"
+                                class="text-primary-700 hover:underline font-medium">View original file</button>
+                        @endunless
                     </p>
                 </div>
                 <x-status-badge :status="$document->display_status" />

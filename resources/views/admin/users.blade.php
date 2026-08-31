@@ -12,22 +12,22 @@
                 @csrf
                 <div>
                     <label class="block text-xs font-medium text-surface-700 mb-1">Full Name</label>
-                    <input name="full_name" required class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    <input name="full_name" required value="{{ old('full_name') }}" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-surface-700 mb-1">Username</label>
-                    <input name="username" required class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    <input name="username" required value="{{ old('username') }}" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-surface-700 mb-1">Email</label>
-                    <input type="email" name="email" required class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    <input type="email" name="email" required value="{{ old('email') }}" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-surface-700 mb-1">Role</label>
                     <select name="role" id="create-role" required class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
-                        <option value="originator">Staff (Originator)</option>
-                        <option value="approver">Staff (Approver)</option>
-                        <option value="admin">Admin</option>
+                        <option value="originator" @selected(old('role', 'originator') === 'originator')>Staff (Originator)</option>
+                        <option value="approver" @selected(old('role') === 'approver')>Staff (Approver)</option>
+                        <option value="admin" @selected(old('role') === 'admin')>Admin</option>
                     </select>
                 </div>
                 <div id="create-category-field">
@@ -37,7 +37,7 @@
                     </label>
                     <select name="assigned_category" id="create-category" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
                         @foreach(\App\Services\ValidationService::knownCategories() as $c)
-                            <option value="{{ $c }}">{{ $c }}</option>
+                            <option value="{{ $c }}" @selected(old('assigned_category') === $c)>{{ $c }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -49,7 +49,7 @@
                     </label>
                     <select name="department" id="create-department" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
                         @foreach(\App\Models\User::knownDepartments() as $d)
-                            <option value="{{ $d }}">{{ $d }}</option>
+                            <option value="{{ $d }}" @selected(old('department') === $d)>{{ $d }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -58,7 +58,7 @@
                     <label class="block text-xs font-medium text-surface-700 mb-1">Level</label>
                     <select name="level" id="create-level" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
                         @foreach(\App\Models\User::knownLevels() as $l)
-                            <option value="{{ $l }}">{{ ucfirst($l) }}</option>
+                            <option value="{{ $l }}" @selected(old('level') === $l)>{{ ucfirst($l) }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -74,7 +74,7 @@
                         <div class="stage-group space-y-1 {{ !$loop->first ? 'hidden' : '' }}" data-category="{{ $category }}">
                             @forelse($categoryStages as $stage)
                                 <label class="stage-option flex items-center gap-2 text-xs text-surface-600" data-departments="{{ implode(',', $stage->departmentNames()) }}">
-                                    <input type="checkbox" name="stage_ids[]" value="{{ $stage->stage_id }}" class="rounded border-surface-300 text-primary-700 focus:ring-primary-500">
+                                    <input type="checkbox" name="stage_ids[]" value="{{ $stage->stage_id }}" @checked(in_array($stage->stage_id, old('stage_ids', []))) class="rounded border-surface-300 text-primary-700 focus:ring-primary-500">
                                     {{ $stage->sequence_order }}. {{ $stage->stage_name }}
                                     @if($stage->departmentNames())
                                         <span class="text-surface-400">({{ implode(' + ', $stage->departmentNames()) }})</span>
@@ -88,8 +88,9 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-medium text-surface-700 mb-1">Password</label>
-                    <input type="password" name="password" required minlength="8" class="w-full rounded-lg border-surface-300 text-sm px-3 py-2 focus:border-primary-500 focus:ring-primary-500">
+                    <label for="create-password" class="block text-xs font-medium text-surface-700 mb-1">Password</label>
+                    <x-password-input id="create-password" name="password" required minlength="8" class="!py-2" />
+                    <x-password-requirements for="create-password" />
                 </div>
                 <button class="w-full bg-primary-700 hover:bg-primary-800 text-white text-sm font-medium py-2.5 rounded-lg transition-colors">Create Account</button>
             </form>

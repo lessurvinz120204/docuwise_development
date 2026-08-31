@@ -119,6 +119,11 @@
                                     </button>
                                 </form>
                             @endunless
+                            <button type="button"
+                                onclick="openBackupCodesModal({{ $u->user_id }}, '{{ addslashes($u->full_name) }}')"
+                                class="inline-flex items-center bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium text-[11px] px-2 py-1 rounded-lg transition-colors">
+                                Sign In Backup Codes
+                            </button>
                             @if($u->is_active)
                                 {{-- A centered modal (same pattern as x-document-viewer-modal),
                                      not a popover anchored to this button — an absolutely-

@@ -36,6 +36,8 @@ class DocumentMovementTimeline
         'user_create' => 'Account Created', 'user_toggle' => 'Account Toggled', 'assign_stages' => 'Stages Assigned',
         'workflow_config' => 'Workflow Config Changed', 'sla_settings_update' => 'SLA Settings Updated',
         'sla_holiday_add' => 'Holiday Added', 'sla_holiday_remove' => 'Holiday Removed', 'extraction_failed' => 'Extraction Failed',
+        'security_blocked' => 'Blocked — Security Scan',
+        'view_backup_codes' => 'Viewed Backup Codes', 'view_backup_codes_denied' => 'Backup Codes Access Denied',
     ];
 
     /**
@@ -54,6 +56,7 @@ class DocumentMovementTimeline
         'approve' => 'approved', 'approved' => 'approved',
         'reject' => 'rejected', 'rejected' => 'rejected',
         'admin_override' => 'escalation', 'auto_approve' => 'escalation', 'sla_escalation' => 'escalation', 'needs_approver' => 'escalation',
+        'security_blocked' => 'rejected',
     ];
 
     public const CATEGORY_CLASSES = [

@@ -22,9 +22,38 @@
     // script would otherwise run before app.js's deferred module script
     // has defined startLiveChannel/startLivePoll, throw immediately, and
     // silently never wire anything up.
+    // Recent Activity (the last section on the page, now full width — see
+    // overview.blade.php) is sized to exactly fill whatever space is left
+    // below it, the same technique already proven on the Document Tracker
+    // page: a fixed max-height guess didn't reliably fit this page (KPI
+    // row + Analytics + SLA/Category above it varies in height), so this
+    // measures live against <main>'s own bottom edge instead — the PAGE
+    // never scrolls, only this one table does internally if it runs long.
+    function sizeRecentActivity() {
+        const scrollEl = document.getElementById('admin-recent-activity-scroll');
+        const mainEl = document.querySelector('main');
+        if (!scrollEl || !mainEl) return;
+
+        const mainPaddingBottom = parseFloat(getComputedStyle(mainEl).paddingBottom) || 0;
+        const available = mainEl.getBoundingClientRect().bottom - mainPaddingBottom - scrollEl.getBoundingClientRect().top;
+        // Floor is deliberately low (not a "comfortable minimum" like
+        // Document Tracker's 200px) — this row sits below a taller,
+        // already-compacted Analytics/SLA/Category row, so there just
+        // isn't much slack to spare on a short screen. A shorter-than-
+        // ideal scroll area here is still strictly better than forcing
+        // the whole page to overflow, which a higher floor did exactly
+        // that on a real 900px-tall viewport (measured directly, not
+        // guessed) — the floor must never win an argument with the
+        // actual available space.
+        scrollEl.style.maxHeight = Math.max(available - 8, 90) + 'px';
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         const overviewEl = document.getElementById('admin-overview');
         if (!overviewEl) return;
+
+        sizeRecentActivity();
+        window.addEventListener('resize', sizeRecentActivity);
 
         const opts = {
             refreshUrl: overviewEl.dataset.refreshUrl,
@@ -154,8 +183,14 @@
         // docblock), so right after any such swap the panel comes back
         // empty. Re-fetch it here with whatever granularity/date the admin
         // had selected, so a background live update never silently resets
-        // their filter back to the default.
-        opts.onSwap = loadAnalyticsPanel;
+        // their filter back to the default. Recent Activity's height also
+        // needs recomputing after every such swap, for the same reason
+        // Document Tracker's does — the new content above it can render at
+        // a different height than before.
+        opts.onSwap = function (signalData) {
+            loadAnalyticsPanel(signalData);
+            sizeRecentActivity();
+        };
 
         startLivePoll({ ...opts, pollUrl: overviewEl.dataset.pollUrl });
     });

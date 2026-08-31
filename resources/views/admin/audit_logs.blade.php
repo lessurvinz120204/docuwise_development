@@ -1,6 +1,6 @@
 @extends('layouts.app')
 @section('title', 'Audit Logs')
-@section('page-title', 'Audit Trail')
+@section('page-title', 'Audit Logs')
 
 @section('content')
 <div class="bg-white rounded-xl shadow-card border border-surface-200 overflow-hidden">
@@ -18,8 +18,8 @@
                 <label class="block text-[11px] font-medium text-surface-500 mb-1">Action</label>
                 <select name="action_type" class="audit-auto-submit rounded-lg border-surface-300 text-xs px-3 py-2">
                     <option value="">All Actions</option>
-                    @foreach($actionTypes as $type)
-                        <option value="{{ $type }}" {{ request('action_type') === $type ? 'selected' : '' }}>{{ $type }}</option>
+                    @foreach($actionTypes as $type => $label)
+                        <option value="{{ $type }}" {{ request('action_type') === $type ? 'selected' : '' }}>{{ $label }}</option>
                     @endforeach
                 </select>
             </div>
@@ -53,7 +53,31 @@
 </div>
 
 <script>
+    // The results table scrolls internally instead of the whole page —
+    // same technique already proven on Document Tracker and the Control
+    // Center's Recent Activity: measure the real remaining space down to
+    // <main>'s own bottom edge and fill exactly that, rather than a fixed
+    // guess. The pagination footer below the table has to stay visible
+    // no matter what, so its own height is subtracted out of the budget
+    // too — otherwise the table's scroll area would claim space the
+    // footer actually needs, pushing the footer (and the page) to
+    // overflow instead.
+    function sizeAuditTable() {
+        const scrollEl = document.getElementById('audit-table-scroll');
+        const footerEl = document.getElementById('audit-pagination-footer');
+        const mainEl = document.querySelector('main');
+        if (!scrollEl || !mainEl) return;
+
+        const mainPaddingBottom = parseFloat(getComputedStyle(mainEl).paddingBottom) || 0;
+        const footerHeight = footerEl ? footerEl.getBoundingClientRect().height : 0;
+        const available = mainEl.getBoundingClientRect().bottom - mainPaddingBottom - footerHeight - scrollEl.getBoundingClientRect().top;
+        scrollEl.style.maxHeight = Math.max(available - 8, 160) + 'px';
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
+        sizeAuditTable();
+        window.addEventListener('resize', sizeAuditTable);
+
         // Auto-submits the surrounding <form> the moment any of the four
         // server-side filters change (Action, Employees, From, To) —
         // without this, picking a date in "From" just stages the filter
@@ -113,7 +137,10 @@
             refreshUrl: resultsEl.dataset.refreshUrl,
             target: resultsEl,
             preserveQueryString: true,
-            onSwap: applyDocumentFilter,
+            onSwap: function (signalData) {
+                applyDocumentFilter(signalData);
+                sizeAuditTable();
+            },
         };
 
         startLiveChannel('admin-dashboard', '.admin.activity-logged', opts);

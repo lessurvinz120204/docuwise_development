@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Events\AccountDeactivated;
 use App\Events\DocumentStatusChanged;
-use App\Mail\AutoApprovalDisputedMail;
+use App\Http\Controllers\Concerns\ThrottlesAttempts;
 use App\Models\AuditLog;
 use App\Models\DocumentAssignment;
 use App\Models\DocumentRepository;
@@ -18,6 +18,7 @@ use App\Models\SystemSetting;
 use App\Models\User;
 use App\Models\WorkflowStage;
 use App\Services\ClassificationService;
+use App\Services\DocumentMovementTimeline;
 use App\Services\SlaService;
 use App\Services\TextExtractionService;
 use App\Services\ValidationService;
@@ -25,12 +26,16 @@ use App\Services\WorkflowService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 
 class AdminController extends Controller
 {
+    use ThrottlesAttempts;
+
     public function __construct(
         private ClassificationService $classifier,
         private TextExtractionService $extractor,
@@ -509,6 +514,7 @@ class AdminController extends Controller
             'approved' => 'Approved',
             'rejected' => 'Rejected',
             'users' => 'Active Users',
+            'ml_model' => 'Active ML Model',
         ];
         abort_unless(array_key_exists($type, $labels), 404);
 
@@ -516,6 +522,17 @@ class AdminController extends Controller
             $users = User::where('is_active', true)->orderBy('full_name')->limit(100)->get();
 
             return view('admin.partials.dashboard-drilldown-users', ['users' => $users, 'label' => $labels[$type]]);
+        }
+
+        // Same data the KPI card's tile itself already carries — moved to
+        // its own drilldown (not shown inline on the dashboard anymore, see
+        // admin/partials/overview.blade.php) purely to free up space in the
+        // KPI row/right column, not because it needed a heavier query.
+        if ($type === 'ml_model') {
+            $activeModel = MlModelRepository::active();
+            $modelHistory = $this->modelHistory();
+
+            return view('admin.partials.dashboard-drilldown-ml-model', compact('activeModel', 'modelHistory'));
         }
 
         $showDecision = in_array($type, ['approved', 'rejected'], true);
@@ -739,7 +756,9 @@ class AdminController extends Controller
             ],
             'stage_ids' => ['nullable', 'array'],
             'stage_ids.*' => ['integer', 'exists:workflow_stages,stage_id'],
-            'password' => ['required', 'string', 'min:8'],
+            // mixedCase()+numbers()+uncompromised() — see the matching
+            // comment on AuthController::resetPassword()'s identical rule.
+            'password' => ['required', 'string', Password::min(8)->mixedCase()->numbers()->uncompromised()],
         ]);
 
         $isApprover = $validated['role'] === 'approver';
@@ -766,6 +785,11 @@ class AdminController extends Controller
             $user->workflowStages()->sync($validStageIds);
         }
 
+        // Ready from day one — a brand new account should never have to
+        // hit "email isn't working" before discovering it has no
+        // fallback at all.
+        $user->generateBackupCodes();
+
         AuditLog::record($request->user()->user_id, null, 'user_create',
             "Created account #{$user->user_id} ({$user->username}) with role '{$user->role}'" .
             ($user->assigned_category ? ", assigned category '{$user->assigned_category}', department '{$user->department}' ({$user->level})." : '.'));
@@ -790,6 +814,55 @@ class AdminController extends Controller
         $user->sendEmailVerificationNotification();
 
         return back()->with('status', "Verification email re-sent to {$user->email}.");
+    }
+
+    /**
+     * Sign In Backup Codes — gated behind the TARGET user's own current
+     * password (not the admin's), submitted here by whoever's helping
+     * them (e.g. read out over a phone call), not something an Admin can
+     * see just by clicking a button on their own authority. Same lockout
+     * behavior as login itself (Concerns\ThrottlesAttempts), scoped per
+     * target account so guessing one user's password here can't be tried
+     * indefinitely, and every attempt — success or failure — is logged.
+     *
+     * Lazily generates a first batch for any account that predates this
+     * feature (created before Sign In Backup Codes existed) rather than
+     * requiring a one-time backfill migration.
+     */
+    public function backupCodes(Request $request, User $user)
+    {
+        $validated = $request->validate(['password' => ['required', 'string']]);
+
+        $throttleKey = $this->throttleKeyFor('backup-codes:' . $user->user_id, (string) $request->user()->user_id, $request);
+
+        if (($seconds = $this->secondsLockedOut($throttleKey)) !== null) {
+            return response()->json(['message' => "Too many attempts. Try again in {$seconds} second(s)."], 429);
+        }
+
+        if (!Hash::check($validated['password'], $user->password_hash)) {
+            $this->recordFailedAttempt($throttleKey);
+
+            AuditLog::record($request->user()->user_id, null, 'view_backup_codes_denied',
+                "Admin {$request->user()->full_name} entered the wrong password attempting to view #{$user->user_id} ({$user->username})'s Sign In Backup Codes.");
+
+            return response()->json(['message' => 'That password is incorrect.'], 422);
+        }
+
+        RateLimiter::clear($throttleKey);
+
+        if ($user->backupCodes()->doesntExist()) {
+            $user->generateBackupCodes();
+        }
+
+        AuditLog::record($request->user()->user_id, null, 'view_backup_codes',
+            "Admin {$request->user()->full_name} viewed #{$user->user_id} ({$user->username})'s Sign In Backup Codes.");
+
+        $codes = $user->backupCodes()->orderBy('id')->get()->map(fn ($c) => [
+            'code' => Crypt::decryptString($c->code),
+            'used_at' => $c->used_at?->format('M j, Y g:i A'),
+        ]);
+
+        return response()->json(['codes' => $codes]);
     }
 
     /** Admin-only: view/edit which specific stages an approver is restricted to. */
@@ -1905,10 +1978,6 @@ class AdminController extends Controller
         NotificationRecord::send($document->originator_id, $document->document_id,
             "Your document '{$document->title}' was auto-approved by the system, but an Admin has disputed it: \"{$note}\". Please resubmit a corrected version.", 'high');
 
-        if ($document->originator->email) {
-            Mail::to($document->originator->email)->queue(new AutoApprovalDisputedMail($document, $stageNames, $note));
-        }
-
         foreach (User::where('role', 'admin')->where('is_active', true)->where('user_id', '!=', $admin->user_id)->get() as $other) {
             NotificationRecord::send($other->user_id, $document->document_id,
                 "{$admin->full_name} disputed the system's auto-approval of '{$document->title}': \"{$note}\".", 'high');
@@ -2698,7 +2767,11 @@ class AdminController extends Controller
     {
         $rows = $this->buildAuditRows($request);
 
-        $perPage = 13;
+        // 10, not a larger page size — chosen specifically so a full page
+        // of rows fits inside audit-table-scroll's computed height with
+        // no internal scrolling needed either, on top of the page itself
+        // never scrolling (see sizeAuditTable() in audit_logs.blade.php).
+        $perPage = 10;
         $page = (int) $request->input('page', 1);
 
         return new \Illuminate\Pagination\LengthAwarePaginator(
@@ -2718,7 +2791,24 @@ class AdminController extends Controller
     {
         $logs = $this->paginateAuditRows($request);
 
-        $actionTypes = AuditLog::select('action_type')->distinct()->orderBy('action_type')->pluck('action_type');
+        // A curated whitelist, not every distinct action_type this table
+        // has ever recorded (~35+ raw values — SLA config edits, ML
+        // retraining internals, stage-reassignment bookkeeping, etc.) —
+        // this dropdown is for "what happened to documents/accounts," not
+        // a raw enumeration of every internal event type. Every one of
+        // those un-whitelisted actions is still logged and still visible
+        // in the results table itself; they're just not offered as a
+        // filter choice. Labels come from DocumentMovementTimeline::
+        // ACTION_LABELS, the same friendly-name map already used to
+        // render every row's own Action badge, so a chosen filter value
+        // and what a row actually shows always say the exact same thing.
+        $actionTypes = collect([
+            'login', 'logout', 'upload', 'classify', 'validate', 'route',
+            'approved', 'rejected', 'admin_override', 'auto_approve',
+            'sla_escalation', 'resubmit', 'legacy_import', 'security_blocked',
+            'user_create', 'user_toggle',
+        ])->mapWithKeys(fn ($type) => [$type => DocumentMovementTimeline::ACTION_LABELS[$type] ?? ucfirst(str_replace('_', ' ', $type))]);
+
         $actors = User::orderBy('full_name')->get(['user_id', 'full_name']);
 
         return view('admin.audit_logs', compact('logs', 'actionTypes', 'actors'));

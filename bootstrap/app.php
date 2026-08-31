@@ -75,6 +75,16 @@ return Application::configure(basePath: dirname(__DIR__))
         // project has already lost both to out-of-band resets once each).
         // Low-traffic hour; overlap-safe in case a manual run is mid-flight.
         $schedule->command('backup:run')->dailyAt('02:00')->withoutOverlapping();
+
+        // Exports rows past their retention window to a compressed file
+        // under storage/app/archives/, then removes them from the live
+        // table — keeps notification_records from growing forever
+        // without ever silently losing the data (see ArchiveOldRecords's
+        // docblock). audit_logs and document_review_sessions are both
+        // deliberately excluded — pruning either would silently shorten
+        // old documents' Document Tracker history. Runs after the
+        // nightly backup, same low-traffic window.
+        $schedule->command('records:archive')->dailyAt('02:30')->withoutOverlapping();
     })
     ->withExceptions(function (Exceptions $exceptions) {
         // Sends every unhandled exception to Sentry (config/sentry.php,

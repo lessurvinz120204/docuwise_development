@@ -2,6 +2,7 @@
 
 use App\Events\UserVerified;
 use App\Mail\ResetPasswordMail;
+use App\Mail\TwoFactorCodeMail;
 use App\Mail\VerifyAccountMail;
 use App\Models\User;
 use Illuminate\Support\Facades\Event;
@@ -26,10 +27,36 @@ function unverifiedUser(array $attributes = []): User
     return User::factory()->unverified()->originator()->create(array_merge(['password_hash' => Hash::make('correct-password')], $attributes));
 }
 
+/**
+ * Drives the whole login (email+password via "Get Code", then submitting
+ * the emailed code alongside them) — for the tests that specifically need
+ * to prove a session actually starts, not just that the password check
+ * passed. Everything lives on the one login page/form now — see
+ * AuthController::login()/requestCode(). $test is the running test case
+ * explicitly, since this helper (a plain top-level function, not a
+ * closure) has no implicit $this the way an it(...) callback does.
+ */
+function completeTwoFactorLogin($test, string $email, string $password)
+{
+    Mail::fake();
+
+    $test->postJson(route('login.request-code'), ['email' => $email, 'password' => $password])
+        ->assertOk();
+
+    $code = null;
+    Mail::assertSent(TwoFactorCodeMail::class, function ($mail) use (&$code) {
+        $code = $mail->code;
+
+        return true;
+    });
+
+    return $test->post(route('login.attempt'), ['email' => $email, 'password' => $password, 'code' => $code]);
+}
+
 it('logs in with email and password once verified', function () {
     $user = verifiedUser(['email' => 'verified@example.test']);
 
-    $this->post(route('login.attempt'), ['email' => 'verified@example.test', 'password' => 'correct-password'])
+    completeTwoFactorLogin($this, 'verified@example.test', 'correct-password')
         ->assertRedirect(route('originator.dashboard'));
 
     $this->assertAuthenticatedAs($user);
@@ -60,7 +87,7 @@ it('clicking a valid verification link marks the account verified and does not l
     $this->assertGuest(); // link alone doesn't authenticate — a separate, deliberate step from verifying
 
     // And now login actually works.
-    $this->post(route('login.attempt'), ['email' => $user->email, 'password' => 'correct-password'])
+    completeTwoFactorLogin($this, $user->email, 'correct-password')
         ->assertRedirect(route('originator.dashboard'));
 });
 
@@ -168,7 +195,7 @@ it('creating an account via the admin sends a verification email and starts it u
         'full_name' => 'New Approver',
         'email' => 'newapprover@example.test',
         'role' => 'originator',
-        'password' => 'password123',
+        'password' => 'Qz8kVn4RTwmp',
     ])->assertSessionHas('status');
 
     $user = User::where('username', 'newapprover')->firstOrFail();
@@ -252,12 +279,17 @@ it('resets the password with a valid token and allows logging in with the new pa
     $this->post(route('password.update'), [
         'token' => $token,
         'email' => 'canreset@example.test',
-        'password' => 'a-brand-new-password',
-        'password_confirmation' => 'a-brand-new-password',
+        'password' => 'A-brand-new-password1',
+        'password_confirmation' => 'A-brand-new-password1',
     ])->assertRedirect(route('login'));
 
-    $this->post(route('login.attempt'), ['email' => 'canreset@example.test', 'password' => 'a-brand-new-password'])
-        ->assertRedirect(route('originator.dashboard'));
+    // "Get Code" succeeding is exactly what proves the new password was
+    // actually accepted (see AuthController::requestCode(), which
+    // validates credentials before sending anything) — that's what this
+    // test is actually verifying, not a full login.
+    Mail::fake();
+    $this->postJson(route('login.request-code'), ['email' => 'canreset@example.test', 'password' => 'A-brand-new-password1'])
+        ->assertOk();
 });
 
 it('rejects resetting the password with an invalid token', function () {
@@ -266,11 +298,11 @@ it('rejects resetting the password with an invalid token', function () {
     $response = $this->post(route('password.update'), [
         'token' => 'not-a-real-token',
         'email' => 'badtoken@example.test',
-        'password' => 'a-brand-new-password',
-        'password_confirmation' => 'a-brand-new-password',
+        'password' => 'A-brand-new-password1',
+        'password_confirmation' => 'A-brand-new-password1',
     ]);
 
     $response->assertSessionHasErrors('email');
-    $this->post(route('login.attempt'), ['email' => 'badtoken@example.test', 'password' => 'a-brand-new-password'])
+    $this->post(route('login.attempt'), ['email' => 'badtoken@example.test', 'password' => 'A-brand-new-password1'])
         ->assertSessionHasErrors(); // old password never changed
 });

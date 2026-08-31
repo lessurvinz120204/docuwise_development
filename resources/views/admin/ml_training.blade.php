@@ -27,11 +27,19 @@
 
     <div class="lg:col-span-2">
         <div class="bg-white rounded-xl shadow-card border border-surface-200 p-6">
-            <h2 class="text-sm font-semibold text-surface-900 mb-1">Train / Retrain Classifier</h2>
-            <p class="text-xs text-surface-500 mb-6">
-                <strong>Step 1:</strong> for each category below, pick at least {{ $minPerCategory }} sample files, then click that category's own "Add" button — do this once per category.
-                <strong>Step 2:</strong> once every category shows a green "staged" count, click "Train Model" at the bottom. Selecting files alone does not stage them — you must click each category's "Add" button first.
-                Staged samples are shared across every admin account, have no upper limit, and are kept even after training, so the corpus keeps growing every time you add more — no need to finish in one sitting, and no need to start over next time.
+            <h2 class="text-sm font-semibold text-surface-900 mb-3">Train / Retrain Classifier</h2>
+            <ol class="space-y-2.5 mb-4">
+                <li class="flex items-start gap-2.5 text-sm text-surface-700">
+                    <span class="shrink-0 w-5 h-5 rounded-full bg-primary-50 text-primary-700 text-xs font-semibold flex items-center justify-center mt-0.5">1</span>
+                    <span>For each category below, pick at least {{ $minPerCategory }} sample files, then click that category's own <strong class="font-semibold text-surface-900">"Add"</strong> button — do this once per category.</span>
+                </li>
+                <li class="flex items-start gap-2.5 text-sm text-surface-700">
+                    <span class="shrink-0 w-5 h-5 rounded-full bg-primary-50 text-primary-700 text-xs font-semibold flex items-center justify-center mt-0.5">2</span>
+                    <span>Once every category shows a green "staged" count, click <strong class="font-semibold text-surface-900">"Train Model"</strong> at the bottom. Selecting files alone does not stage them — you must click each category's "Add" button first.</span>
+                </li>
+            </ol>
+            <p class="text-xs text-surface-400 mb-6">
+                Staged samples are shared across every admin account, have no upper limit, and are kept even after training — no need to finish in one sitting, and no need to start over next time.
             </p>
 
             @php

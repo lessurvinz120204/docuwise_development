@@ -11,6 +11,7 @@
         'escalated' => ['bg-rejected-50 text-rejected-700 ring-rejected-500/20', 'Escalated to Admin'],
         'disputed' => ['bg-processing-50 text-processing-700 ring-processing-500/20', 'Disputed (Auto-Approved)'],
         'pending_review' => ['bg-amber-50 text-amber-700 ring-amber-500/20', 'Pending Admin Review'],
+        'security_blocked' => ['bg-rejected-50 text-rejected-700 ring-rejected-500/20', '⚠ Blocked — Security Scan'],
     ];
     [$classes, $label] = $map[$status] ?? ['bg-surface-100 text-surface-600 ring-surface-300', ucfirst($status)];
 @endphp

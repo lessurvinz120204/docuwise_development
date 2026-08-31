@@ -14,19 +14,22 @@
     $actionLabels = \App\Services\DocumentMovementTimeline::ACTION_LABELS;
 @endphp
 
-<div class="overflow-x-auto">
+{{-- id targeted by sizeAuditTable() in audit_logs.blade.php — the PAGE
+     never scrolls, this scrolls internally instead, same principle as
+     Document Tracker/the Control Center's Recent Activity. --}}
+<div id="audit-table-scroll" class="overflow-x-auto overflow-y-auto">
 <table class="w-full min-w-[720px] text-sm">
-    <thead class="bg-surface-50 text-surface-500 text-xs uppercase tracking-wide">
+    <thead class="sticky top-0 bg-surface-50 text-surface-500 text-xs uppercase tracking-wide">
         <tr>
-            <th class="text-left px-6 py-3 font-medium">Timestamp</th>
-            <th class="text-left px-6 py-3 font-medium">Document Title</th>
-            <th class="text-left px-6 py-3 font-medium">Actor</th>
-            <th class="text-left px-6 py-3 font-medium">Action</th>
-            <th class="text-left px-6 py-3 font-medium">Track</th>
+            <th class="text-left px-6 py-3 font-medium border-r border-surface-200">Timestamp</th>
+            <th class="text-left px-6 py-3 font-medium border-r border-surface-200">Document Title</th>
+            <th class="text-left px-6 py-3 font-medium border-r border-surface-200">Employee</th>
+            <th class="text-left px-6 py-3 font-medium border-r border-surface-200">Action</th>
+            <th class="text-left px-6 py-3 font-medium border-r border-surface-200">Track</th>
             <th class="text-left px-6 py-3 font-medium">Description</th>
         </tr>
     </thead>
-    <tbody id="audit-rows" class="divide-y divide-surface-100">
+    <tbody id="audit-rows" class="divide-y divide-surface-200">
         @forelse($logs as $row)
             @include('admin.partials.audit-row', ['row' => $row])
         @empty
@@ -40,4 +43,4 @@
     </tbody>
 </table>
 </div>
-<div class="px-6 py-4 border-t border-surface-200">{{ $logs->links() }}</div>
+<div id="audit-pagination-footer" class="px-6 py-4 border-t border-surface-200">{{ $logs->links() }}</div>

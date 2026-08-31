@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Events\DocumentStatusChanged;
 use App\Jobs\AutoApproveAssignmentJob;
-use App\Mail\DocumentDecisionMail;
 use App\Models\AuditLog;
 use App\Models\DocumentAssignment;
 use App\Models\DocumentReviewSession;
@@ -12,7 +11,6 @@ use App\Models\NotificationRecord;
 use App\Models\SlaViolation;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Mail;
 
 /**
  * SlaService
@@ -416,12 +414,6 @@ class SlaService
             NotificationRecord::send($document->originator_id, $document->document_id,
                 "An Admin override was applied to your document '{$document->title}' ({$decision})." .
                 ($comments ? " Notes: \"{$comments}\"" : ''));
-
-            if ($document->originator->email) {
-                Mail::to($document->originator->email)->queue(
-                    new DocumentDecisionMail($document, $decision, $comments, $assignment->stage->stage_name)
-                );
-            }
         });
     }
 }

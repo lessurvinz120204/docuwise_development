@@ -5,8 +5,6 @@ namespace App\Services;
 use App\Events\AssignmentRouted;
 use App\Events\DocumentStatusChanged;
 use App\Jobs\EscalateAssignmentJob;
-use App\Mail\DocumentAssignedMail;
-use App\Mail\DocumentDecisionMail;
 use App\Models\AuditLog;
 use App\Models\DocumentAssignment;
 use App\Models\DocumentRepository;
@@ -19,7 +17,6 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Throwable;
 
 /**
@@ -98,6 +95,7 @@ class WorkflowService
         private ClassificationService $classifier,
         private ValidationService $validator,
         private BusinessHoursService $businessHours,
+        private MalwareScanService $malwareScanner,
     ) {
     }
 
@@ -227,6 +225,16 @@ class WorkflowService
             if ($revisionOf) {
                 AuditLog::record($originator->user_id, $document->document_id, 'resubmit',
                     "Resubmitted as version {$document->version_number}, revising rejected document #{$revisionOf->document_id} ('{$revisionOf->title}').");
+            }
+
+            // Security check — deliberately first, before extraction/
+            // classification ever touch the file's contents. See
+            // MalwareScanService's docblock for exactly what this does
+            // and doesn't catch (a targeted macro check, not general
+            // antivirus).
+            $scanResult = $this->malwareScanner->scan($file);
+            if (!$scanResult['clean']) {
+                return $this->blockForSecurity($document, $originator, $scanResult['reason']);
             }
 
             // 3.1 + 3.2 — extraction & preprocessing.
@@ -420,6 +428,41 @@ class WorkflowService
 
         NotificationRecord::send($originator->user_id, $document->document_id,
             "Your document '{$document->title}' could not be read by the system. " . $document->validation_errors[0]);
+
+        return $document->fresh();
+    }
+
+    /**
+     * Reuses the existing 'rejected' global_status (rather than a new enum
+     * value — see the is_security_blocked migration's docblock) so the
+     * originator's tracker/resubmit flow both already work unmodified;
+     * is_security_blocked is what lets the UI show a distinct message and
+     * hide the "view original file" option for this document specifically
+     * (see DocumentRepositoryPolicy::viewFile()). Never routed — this
+     * returns before classification/validation/routeToWorkflow() ever run.
+     *
+     * The originator only ever sees a generic, non-alarming message —
+     * $reason (what was actually detected) is deliberately kept out of
+     * both the audit trail (shared with the originator via the Document
+     * Tracker) and their notification, and goes only to Admins, who are
+     * the ones who might actually need to investigate or judge a false
+     * positive.
+     */
+    private function blockForSecurity(DocumentRepository $document, User $originator, string $reason): DocumentRepository
+    {
+        $document->global_status = 'rejected';
+        $document->is_security_blocked = true;
+        $document->save();
+
+        AuditLog::record(null, $document->document_id, 'security_blocked',
+            "'{$document->title}' was blocked by an automated security scan before reaching classification or review.");
+
+        NotificationRecord::send($originator->user_id, $document->document_id,
+            "Your document '{$document->title}' could not be accepted — it failed an automatic security scan and was blocked " .
+            'before reaching any reviewer. If you believe this is a mistake, you can upload a corrected version.');
+
+        $this->notifyAdminsDocumentNeedsReview($document,
+            "'{$document->title}' (uploaded by {$originator->full_name}) was blocked by the security scan: {$reason}.");
 
         return $document->fresh();
     }
@@ -825,10 +868,6 @@ class WorkflowService
                 NotificationRecord::send($approver->user_id, $document->document_id,
                     "New document assigned for '{$stage->stage_name}': {$document->title}.");
 
-                if ($approver->email) {
-                    Mail::to($approver->email)->queue(new DocumentAssignedMail($document, $stage, $approver));
-                }
-
                 // A SEPARATE, extra-urgent notification for assignments born
                 // with an already-tight window — reuses the exact "Urgent"
                 // threshold (urgencyRank() === 1, 30 minutes or less of real
@@ -1035,12 +1074,6 @@ class WorkflowService
             NotificationRecord::send($document->originator_id, $document->document_id,
                 "An Admin decision was applied to your document '{$document->title}' ({$decision})." .
                 ($comments ? " Notes: \"{$comments}\"" : ''));
-
-            if ($document->originator->email) {
-                Mail::to($document->originator->email)->queue(
-                    new DocumentDecisionMail($document, $decision, $comments, $assignment->stage->stage_name)
-                );
-            }
         });
     }
 
@@ -1126,12 +1159,6 @@ class WorkflowService
             NotificationRecord::send($document->originator_id, $document->document_id,
                 "Stage '{$stage->stage_name}' of '{$document->title}' was {$decision} by {$approver->full_name}." .
                 ($comments ? " Comments: \"{$comments}\"" : '') . $progressNote);
-
-            if ($document->originator->email) {
-                Mail::to($document->originator->email)->queue(
-                    new DocumentDecisionMail($document, $decision, $comments, $stage->stage_name)
-                );
-            }
 
             $this->completeStage($assignment, $decision);
         });

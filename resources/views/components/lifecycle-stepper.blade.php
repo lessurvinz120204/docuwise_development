@@ -10,11 +10,16 @@
 
     $status = $document->global_status;
     $isRejected = $status === 'rejected';
+    // A security-blocked document never reached classification at all —
+    // it stops right at "Submitted" (index 0), not "Classified &
+    // Validated" (index 1) the way an ordinary human rejection does, and
+    // gets its own caption below rather than the generic rejection one.
+    $isSecurityBlocked = (bool) $document->is_security_blocked;
 
     // Normalize auto_approved -> approved for stepper positioning.
     $effective = in_array($status, ['approved', 'auto_approved']) ? 'approved' : $status;
     $found = array_search($effective, $order);
-    $currentIndex = $isRejected ? 1 : ($found === false ? 0 : $found);
+    $currentIndex = $isSecurityBlocked ? 0 : ($isRejected ? 1 : ($found === false ? 0 : $found));
 @endphp
 
 {{-- overflow-x-auto is the fallback for very narrow phones — the three
@@ -72,6 +77,8 @@
 </div>
 </div>
 
-@if($isRejected)
+@if($isSecurityBlocked)
+    <p class="mt-2 text-xs font-medium text-rejected-700">This document was blocked by an automated security scan before it ever reached review.</p>
+@elseif($isRejected)
     <p class="mt-2 text-xs font-medium text-rejected-700">This document was rejected during review.</p>
 @endif

@@ -36,13 +36,12 @@
                 </div>
                 <div>
                     <label for="password" class="block text-sm font-medium text-surface-700 mb-1.5">New Password</label>
-                    <input id="password" name="password" type="password" required minlength="8"
-                        class="w-full rounded-lg border-surface-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-3.5 py-2.5">
+                    <x-password-input id="password" required minlength="8" />
+                    <x-password-requirements for="password" />
                 </div>
                 <div>
                     <label for="password_confirmation" class="block text-sm font-medium text-surface-700 mb-1.5">Confirm New Password</label>
-                    <input id="password_confirmation" name="password_confirmation" type="password" required minlength="8"
-                        class="w-full rounded-lg border-surface-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-3.5 py-2.5">
+                    <x-password-input id="password_confirmation" required minlength="8" />
                 </div>
                 <button type="submit"
                     class="w-full bg-gradient-to-b from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition-all">

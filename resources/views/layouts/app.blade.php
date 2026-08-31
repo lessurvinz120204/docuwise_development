@@ -152,8 +152,28 @@
 </div>
 @auth
     <x-document-viewer-modal />
+    <x-backup-codes-modal />
     @if(auth()->user()->isAdmin())
         <x-kpi-drilldown-modal />
+    @endif
+
+    @if(session('new_backup_codes'))
+        {{-- application/json, not a data-attribute — codes never
+             round-trip through HTML attribute encoding this way, and
+             the value can't terminate early on a stray quote. Shown
+             once, on the account holder's own first successful login —
+             see AuthController::login()'s new_backup_codes flash. --}}
+        <script type="application/json" id="new-backup-codes-data">@json(session('new_backup_codes'))</script>
+        <script>
+            document.addEventListener('DOMContentLoaded', function () {
+                const codes = JSON.parse(document.getElementById('new-backup-codes-data').textContent);
+                openBackupCodesModalWithCodes(
+                    'Your Sign In Backup Codes',
+                    codes,
+                    "Save these now — if you ever lose access, your Administrator can look them up for you, but they'll need your current password to do it."
+                );
+            });
+        </script>
     @endif
 @endauth
 <script>

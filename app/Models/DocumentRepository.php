@@ -39,7 +39,7 @@ class DocumentRepository extends Model
         'previous_version_id', 'version_number', 'is_legacy_import', 'disputed_at',
         'ml_review_status', 'ml_recheck_category', 'ml_recheck_confidence', 'ml_rechecked_at',
         'ml_recheck_dismissed_at', 'confirmed_at_model_id', 'requires_printing',
-        'readability_score', 'readability_review_status',
+        'readability_score', 'readability_review_status', 'is_security_blocked',
     ];
 
     protected $casts = [
@@ -54,6 +54,7 @@ class DocumentRepository extends Model
         'ml_rechecked_at' => 'datetime',
         'ml_recheck_dismissed_at' => 'datetime',
         'requires_printing' => 'boolean',
+        'is_security_blocked' => 'boolean',
     ];
 
     // Every state a document can be in — mirrors Section 5 state machine.
@@ -69,6 +70,9 @@ class DocumentRepository extends Model
      */
     public function getDisplayStatusAttribute(): string
     {
+        if ($this->is_security_blocked) {
+            return 'security_blocked';
+        }
         if ($this->disputed_at) {
             return 'disputed';
         }

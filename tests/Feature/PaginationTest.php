@@ -192,14 +192,14 @@ it('paginates Unassigned Documents at 2 per page', function () {
     $this->actingAs($admin)->get(route('admin.unassigned.index'))->assertSee('Next');
 });
 
-it('paginates the Admin Audit Trail at 13 per page', function () {
+it('paginates the Admin Audit Trail at 10 per page', function () {
     $admin = User::factory()->admin()->create();
-    for ($i = 0; $i < 13; $i++) {
+    for ($i = 0; $i < 10; $i++) {
         \App\Models\AuditLog::record($admin->user_id, null, 'user_toggle', "PAGINATION TEST audit row {$i}");
     }
     $this->actingAs($admin)->get(route('admin.audit.logs'))->assertDontSee('Next');
 
-    \App\Models\AuditLog::record($admin->user_id, null, 'user_toggle', 'PAGINATION TEST audit row 14');
+    \App\Models\AuditLog::record($admin->user_id, null, 'user_toggle', 'PAGINATION TEST audit row 11');
     $this->actingAs($admin)->get(route('admin.audit.logs'))->assertSee('Next');
 });
 

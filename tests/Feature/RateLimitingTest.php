@@ -1,7 +1,9 @@
 <?php
 
+use App\Mail\TwoFactorCodeMail;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\RateLimiter;
 
 /**
@@ -35,20 +37,42 @@ it('does not block a login attempt for a different email after another one is th
         $this->post(route('login.attempt'), ['email' => 'originator@example.test', 'password' => 'wrong-password']);
     }
 
-    $response = $this->post(route('login.attempt'), ['email' => 'admin@example.test', 'password' => 'correct-password']);
+    $response = $this->post(route('login.attempt'), ['email' => 'admin@example.test', 'password' => 'correct-password', 'code' => '']);
 
-    $response->assertRedirect(route('admin.dashboard'));
+    // No code was ever requested for this account, so the credentials
+    // step itself succeeding (not blocked by the OTHER email's throttle)
+    // shows up as a 'code' error rather than a dashboard redirect — a
+    // correct password alone no longer completes login (see
+    // AuthController::login()). Reaching that specific error, rather
+    // than an "Invalid credentials"/"Too many login attempts" one, is
+    // exactly what proves the password check succeeded and wasn't
+    // wrongly blocked, which is what this test is actually about.
+    $response->assertSessionHasErrors('code');
 });
 
 it('clears the throttle counter on a successful login', function () {
-    User::factory()->originator()->create(['email' => 'originator@example.test', 'password_hash' => bcrypt('correct-password')]);
+    $user = User::factory()->originator()->create(['email' => 'originator@example.test', 'password_hash' => bcrypt('correct-password')]);
+    Mail::fake();
 
     for ($i = 0; $i < 3; $i++) {
-        $this->post(route('login.attempt'), ['email' => 'originator@example.test', 'password' => 'wrong-password']);
+        $this->post(route('login.attempt'), ['email' => 'originator@example.test', 'password' => 'wrong-password', 'code' => '']);
     }
 
-    $this->post(route('login.attempt'), ['email' => 'originator@example.test', 'password' => 'correct-password'])
+    // Complete a REAL login (request the code, then submit it alongside
+    // the credentials) — the counter only clears once login()
+    // itself verifies the code, not just the password (see
+    // AuthController::login()'s RateLimiter::clear() call).
+    $this->postJson(route('login.request-code'), ['email' => 'originator@example.test', 'password' => 'correct-password'])
+        ->assertOk();
+    $code = null;
+    Mail::assertSent(TwoFactorCodeMail::class, function ($mail) use (&$code) {
+        $code = $mail->code;
+
+        return true;
+    });
+    $this->post(route('login.attempt'), ['email' => 'originator@example.test', 'password' => 'correct-password', 'code' => $code])
         ->assertRedirect(route('originator.dashboard'));
+    $this->assertAuthenticatedAs($user);
 
     auth()->logout();
 

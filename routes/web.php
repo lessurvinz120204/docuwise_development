@@ -50,6 +50,12 @@ Route::middleware('guest')->group(function () {
     // which the per-email limiter alone wouldn't trip.
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:auth')->name('login.attempt');
 
+    // AJAX action behind the login page's "Get Code"/"Resend Code" button
+    // — email/password/code all live on the one login page now (see
+    // auth/login.blade.php), so there's no separate two-factor page to
+    // route to. See AuthController::requestCode()'s docblock.
+    Route::post('/login/request-code', [AuthController::class, 'requestCode'])->middleware('throttle:auth-sensitive')->name('login.request-code');
+
     // Self-service password reset — reachable by a guest by definition
     // (that's the whole point: they can't log in to reach anything else).
     Route::get('/forgot-password', [AuthController::class, 'showForgotPassword'])->name('password.request');
@@ -147,6 +153,10 @@ Route::middleware('auth')->group(function () {
         Route::post('/users/{user}/resend-verification', [AdminController::class, 'resendVerification'])->name('users.resend-verification');
         Route::get('/users/{user}/stages', [AdminController::class, 'editApproverStages'])->name('users.stages.edit');
         Route::post('/users/{user}/stages', [AdminController::class, 'updateApproverStages'])->name('users.stages.update');
+        // Password-gated (the target user's own current password, not
+        // the admin's) — see AdminController::backupCodes() docblock.
+        // Same lockout behavior as login itself (Concerns\ThrottlesAttempts).
+        Route::post('/users/{user}/backup-codes', [AdminController::class, 'backupCodes'])->middleware('throttle:auth-sensitive')->name('users.backup-codes');
 
         Route::get('/ml-training', [AdminController::class, 'mlTraining'])->name('ml.training');
         Route::post('/ml-training', [AdminController::class, 'trainModel'])->name('ml.train');

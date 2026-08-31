@@ -9,6 +9,8 @@ use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Laravel\Sanctum\HasApiTokens;
 
@@ -19,8 +21,12 @@ use Laravel\Sanctum\HasApiTokens;
  * opting into the CONTRACT; no need to re-declare either trait here.
  * sendEmailVerificationNotification()/sendPasswordResetNotification() are
  * overridden below to send this app's own branded Mailables instead of
- * Laravel's default bare notification styling, matching every other email
- * this app already sends (DocumentAssignedMail, DocumentDecisionMail, etc.).
+ * Laravel's default bare notification styling, matching the two-factor
+ * code email (see AuthController::requestCode()) — the only three things
+ * this app still sends by email. Every other event (document assigned,
+ * a decision made, an auto-approval disputed) is deliberately in-app
+ * notification only, not email — see NotificationRecord::send() at each
+ * of those call sites; those Mailables existed once and were removed.
  */
 class User extends Authenticatable implements MustVerifyEmail
 {
@@ -43,12 +49,14 @@ class User extends Authenticatable implements MustVerifyEmail
         'username', 'password_hash', 'full_name', 'email', 'role', 'assigned_category', 'department', 'level', 'is_busy', 'created_by', 'is_active',
     ];
 
-    protected $hidden = ['password_hash', 'remember_token'];
+    protected $hidden = ['password_hash', 'remember_token', 'two_factor_code'];
 
     protected $casts = [
         'is_active' => 'boolean',
         'is_busy' => 'boolean',
         'email_verified_at' => 'datetime',
+        'backup_codes_viewed_at' => 'datetime',
+        'two_factor_expires_at' => 'datetime',
     ];
 
     /**
@@ -79,6 +87,119 @@ class User extends Authenticatable implements MustVerifyEmail
     public function setPasswordAttribute($value)
     {
         $this->attributes['password_hash'] = $value;
+    }
+
+    /** Kept in sync with the live countdown shown on the two-factor screen (resources/views/auth/two-factor.blade.php) — change both together. */
+    public const TWO_FACTOR_CODE_VALIDITY_SECONDS = 120;
+
+    /**
+     * Generates a fresh 6-digit login code, valid for
+     * TWO_FACTOR_CODE_VALIDITY_SECONDS, and persists only its hash —
+     * never the plain code — so a database dump alone can't hand over an
+     * active login, same reasoning as password_hash itself. Returns the
+     * plain code once, purely so the caller (AuthController::
+     * requestTwoFactorCode()) can email it; nothing else ever reads it
+     * back out.
+     */
+    public function generateTwoFactorCode(): string
+    {
+        $code = (string) random_int(100000, 999999);
+
+        $this->forceFill([
+            'two_factor_code' => Hash::make($code),
+            'two_factor_expires_at' => now()->addSeconds(self::TWO_FACTOR_CODE_VALIDITY_SECONDS),
+        ])->save();
+
+        return $code;
+    }
+
+    /** False for an expired or already-cleared code, not just a wrong one — both fail the same way to the caller. */
+    public function verifyTwoFactorCode(string $code): bool
+    {
+        if (!$this->two_factor_code || !$this->two_factor_expires_at || $this->two_factor_expires_at->isPast()) {
+            return false;
+        }
+
+        return Hash::check($code, $this->two_factor_code);
+    }
+
+    /** Called after a successful verify (one-time use) and whenever a fresh login attempt supersedes a pending code. */
+    public function clearTwoFactorCode(): void
+    {
+        $this->forceFill(['two_factor_code' => null, 'two_factor_expires_at' => null])->save();
+    }
+
+    /** Kept in sync with the sign-in page's own copy — change both together. */
+    public const BACKUP_CODE_COUNT = 3;
+
+    /**
+     * Sign In Backup Codes — a login fallback that works for ANY reason
+     * the emailed 2FA code doesn't reach someone (the mail service being
+     * down, their own inbox full, spam-filtered, no connection right
+     * then, whatever), not gated on detecting a specific cause. Called
+     * on account creation and again automatically the instant someone's
+     * last remaining code gets used, so an account is never left with
+     * zero.
+     *
+     * Deliberately encrypted (Crypt::encryptString(), reversible with
+     * APP_KEY), not hashed like password_hash/two_factor_code — an Admin
+     * needs to be able to look a user's current codes back up
+     * (password-gated, see AdminController::backupCodes()) for someone
+     * who's lost theirs, which a one-way hash could never allow. Plain
+     * 6-digit numeric, matching the emailed code's format — a smaller
+     * code space (1,000,000 vs. an alphanumeric format's ~1.09 trillion)
+     * but the shared login rate limiter (5 attempts/60s, see
+     * ThrottlesAttempts) already makes brute-forcing either format
+     * impractical, so the simpler, more familiar format won out.
+     */
+    public function generateBackupCodes(): void
+    {
+        $this->backupCodes()->delete();
+
+        for ($i = 0; $i < self::BACKUP_CODE_COUNT; $i++) {
+            $this->backupCodes()->create(['code' => Crypt::encryptString(self::randomBackupCode())]);
+        }
+    }
+
+    private static function randomBackupCode(): string
+    {
+        return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Checks $code against every currently-unused backup code for this
+     * account. On a match: marks that one code used (never deleted —
+     * still shown as "Used on ..." in the Admin popup), then, if that
+     * was the last unused one, immediately generates a fresh batch so
+     * the account is never left without a working fallback.
+     */
+    public function verifyBackupCode(string $code): bool
+    {
+        $normalized = trim($code);
+
+        foreach ($this->backupCodes()->unused()->get() as $backupCode) {
+            try {
+                if (Crypt::decryptString($backupCode->code) === $normalized) {
+                    $backupCode->used_at = now();
+                    $backupCode->save();
+
+                    if ($this->backupCodes()->unused()->doesntExist()) {
+                        $this->generateBackupCodes();
+                    }
+
+                    return true;
+                }
+            } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+                continue;
+            }
+        }
+
+        return false;
+    }
+
+    public function backupCodes()
+    {
+        return $this->hasMany(UserBackupCode::class, 'user_id', 'user_id');
     }
 
     // --- Role helpers ---
